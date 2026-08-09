@@ -1,6 +1,6 @@
 const std = @import("std");
 const mar = @import("marionette");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const MarionetteWalFs = @import("marionette_fs.zig").MarionetteFs;
 
 pub const PacketRef = struct {

@@ -1,10 +1,10 @@
 //! Optional gperftools integration enabled with `-Dgperftools=true`.
 
-const raft_zig = @import("raft_zig");
+const raftz = @import("raftz");
 const grpc_gperftools = @import("grpc_lite_gperftools");
 
 comptime {
-    _ = raft_zig;
+    _ = raftz;
 }
 
 pub const allocator = grpc_gperftools.allocator;

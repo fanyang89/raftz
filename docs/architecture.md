@@ -1,6 +1,6 @@
 # Architecture
 
-raft-zig separates pure consensus decisions from persistence, transport, and
+raftz separates pure consensus decisions from persistence, transport, and
 application state. The split supports both a low-level Ready/Advance API and a
 complete orchestration layer.
 

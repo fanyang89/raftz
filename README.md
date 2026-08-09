@@ -1,14 +1,14 @@
-# raft-zig
+# raftz
 
-[![CI](https://github.com/fanyang89/raft-zig/actions/workflows/ci.yml/badge.svg)](https://github.com/fanyang89/raft-zig/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/fanyang89/raft-zig/graph/badge.svg)](https://codecov.io/gh/fanyang89/raft-zig)
+[![CI](https://github.com/fanyang89/raftz/actions/workflows/ci.yml/badge.svg)](https://github.com/fanyang89/raftz/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/fanyang89/raftz/graph/badge.svg)](https://codecov.io/gh/fanyang89/raftz)
 [![Zig](https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
-[![License](https://img.shields.io/github/license/fanyang89/raft-zig)](LICENSE)
+[![License](https://img.shields.io/github/license/fanyang89/raftz)](LICENSE)
 
 An embeddable [Raft](https://raft.github.io/) consensus library for Zig with a
 Ready/Advance core, durable WAL, snapshots, and a grpc-lite transport.
 
-raft-zig is a functional pre-1.0 implementation ported from
+raftz is a functional pre-1.0 implementation ported from
 [raftpp](https://github.com/fanyang89/raftpp). Core consensus, `RawNode`,
 `Raftor`, persistent storage, durable membership, and multi-node transport are
 implemented and tested. Public APIs and persistent formats may still change
@@ -29,22 +29,22 @@ five established Raft implementations.
 
 ## Quick Start
 
-raft-zig requires Zig 0.16.0. [mise](https://mise.jdx.dev/) is recommended for
+raftz requires Zig 0.16.0. [mise](https://mise.jdx.dev/) is recommended for
 tool installation and project tasks, but direct `zig build` commands also work.
 
 There are no release tags yet. Pin a commit when adding the package to
 `build.zig.zon`, then import its public module:
 
 ```zig
-const raft_dependency = b.dependency("raft_zig", .{
+const raft_dependency = b.dependency("raftz", .{
     .target = target,
     .optimize = optimize,
 });
-app.root_module.addImport("raft_zig", raft_dependency.module("raft_zig"));
+app.root_module.addImport("raftz", raft_dependency.module("raftz"));
 ```
 
 ```zig
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 ```
 
 Build and run the single-node example from this repository:
@@ -52,7 +52,7 @@ Build and run the single-node example from this repository:
 ```bash
 mise install
 mise run build
-./zig-out/bin/raft-zig-minimal-node
+./zig-out/bin/raftz-minimal-node
 ```
 
 For a complete application, [`examples/raft-sqlite`](examples/raft-sqlite)
@@ -111,7 +111,7 @@ for the processing order and ownership contracts.
 | Core Raft, ReadIndex, learners, joint consensus | Supported |
 | MemoryStorage, WAL, snapshots, restart | Supported |
 | Single Raft group per `Raftor` | Supported scope |
-| grpc-lite authentication and TLS | Not provided by raft-zig |
+| grpc-lite authentication and TLS | Not provided by raftz |
 | Multi-tenant group hosting, disaster-recovery import | Out of scope or not implemented |
 
 The default filesystem and `Raftor.run` currently use Linux primitives. The

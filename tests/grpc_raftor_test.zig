@@ -1,5 +1,5 @@
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 const allocator = std.heap.smp_allocator;
 const cluster_id: raft.ClusterId = .{0x47} ++ .{0x52} ** 15;

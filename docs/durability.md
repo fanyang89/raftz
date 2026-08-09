@@ -1,6 +1,6 @@
 # Durability
 
-raft-zig separates the storage contract from its in-memory and persistent
+raftz separates the storage contract from its in-memory and persistent
 implementations. Raftor uses the same Ready ordering with either backend.
 
 ## Storage Interfaces

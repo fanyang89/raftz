@@ -201,7 +201,7 @@ test "setEntryChecksum skips exempt entries" {
 //   context_len     : 4 bytes  u32
 //   context         : context_len bytes
 //
-// This is internal to raft-zig; encoding and decoding are both in this file.
+// This is internal to raftz; encoding and decoding are both in this file.
 // Swap for a standard schema (protobuf, capnp) when wire compatibility with
 // other raft implementations is required.
 

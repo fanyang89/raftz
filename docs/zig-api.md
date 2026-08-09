@@ -1,6 +1,6 @@
 # Zig API
 
-[`src/root.zig`](../src/root.zig) is raft-zig's public module entry point. It
+[`src/root.zig`](../src/root.zig) is raftz's public module entry point. It
 re-exports the supported integration types as well as lower-level consensus
 types that may evolve before 1.0.
 
@@ -79,7 +79,7 @@ borrowed for the call; the StateMachine must not deinitialize or retain them.
 Use `cloneEntry` or `shareEntry` with an application allocator when state must
 outlive the callback. Returning an error is terminal and must leave application
 state unchanged. An optional `ApplyResult.response` must be allocated with the
-allocator passed to Raftor. raft-zig owns it after return, delivers it as a
+allocator passed to Raftor. raftz owns it after return, delivers it as a
 borrowed slice to the proposal callback, and then frees it with that allocator.
 
 `take_snapshot` receives the applied index, applied term, and current
@@ -115,7 +115,7 @@ but must send `Ready.light.messages` after persistence when
 
 ## Ownership
 
-raft-zig uses explicit allocators and deterministic `deinit` throughout the
+raftz uses explicit allocators and deterministic `deinit` throughout the
 public API.
 
 `Entry.data` is immutable and reference-counted after it enters the Raft

@@ -160,7 +160,7 @@ entry 之后不被改写）、leader append-only、leader completeness（仅在�
 - etcd `testdata/*.txt` datadriven rafttest 语料基本未入库（41+ 个文件仅登记
   1 条）。这是 etcd 最系统的安全场景语料，移植成本低、价值高。
 - 无 Dragonboat / braft / NuRaft 来源。Dragonboat 是最值得补充的第五个来源。
-- raft-zig 自有层（rpc、raftor、WAL、loopback）没有"计划覆盖"的登记机制。
+- raftz 自有层（rpc、raftor、WAL、loopback）没有"计划覆盖"的登记机制。
 
 ## 3. 优先级建议
 

@@ -2,7 +2,7 @@ const std = @import("std");
 const linux = std.os.linux;
 
 const grpc = @import("grpc_lite");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const admin = @import("admin.zig");
 const config_mod = @import("config.zig");
 const service_mod = @import("service.zig");

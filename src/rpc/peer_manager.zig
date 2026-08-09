@@ -3,7 +3,7 @@
 const std = @import("std");
 const linux = std.os.linux;
 const grpc = @import("grpc_lite");
-const build_options = @import("raft_zig_options");
+const build_options = @import("raftz_options");
 const Error = @import("../core/error.zig").Error;
 const transport = @import("../transport.zig");
 

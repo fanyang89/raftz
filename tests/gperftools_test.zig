@@ -1,7 +1,7 @@
 const std = @import("std");
-const perf = @import("raft_zig_gperftools");
+const perf = @import("raftz_gperftools");
 
-test "grpc-lite gperftools is linked through raft-zig" {
+test "grpc-lite gperftools is linked through raftz" {
     const memory = try perf.allocator.alloc(u8, 4096);
     defer perf.allocator.free(memory);
 

@@ -1,5 +1,5 @@
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 const BenchmarkOptions = struct {
     proposals: usize = 1_000_000,

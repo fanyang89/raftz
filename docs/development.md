@@ -1,6 +1,6 @@
 # Development
 
-raft-zig uses Zig 0.16.0 and mise tasks for reproducible local commands. The
+raftz uses Zig 0.16.0 and mise tasks for reproducible local commands. The
 project also accepts direct Zig build invocations.
 
 ## Setup

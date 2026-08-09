@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// Adapted and modified for raft-zig from Dragonboat revision
+// Adapted and modified for raftz from Dragonboat revision
 // 076c7f6497dcc18880aed6323246d5079661942c.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 const allocator = std.testing.allocator;
 

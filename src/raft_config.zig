@@ -52,7 +52,7 @@ pub const Config = struct {
     max_uncommitted_entries: u64 = std.math.maxInt(u64),
     /// Maximum bytes of committed entries returned per Ready.
     max_committed_size_per_ready: u64 = std.math.maxInt(u64),
-    /// Allow applying entries that haven't been persisted yet (raft-zig only).
+    /// Allow applying entries that haven't been persisted yet (raftz only).
     max_apply_unpersisted_log_limit: u64 = 0,
     /// Reject MsgPropose on followers (do not forward to the leader).
     disable_proposal_forwarding: bool = false,

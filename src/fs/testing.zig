@@ -70,7 +70,7 @@ pub const FsFixture = struct {
         std.testing.io.random(&random_bytes);
         var encoded: [std.base64.url_safe.Encoder.calcSize(random_bytes.len)]u8 = undefined;
         _ = std.base64.url_safe.Encoder.encode(&encoded, &random_bytes);
-        const root_path = try std.fmt.allocPrintSentinel(allocator, "/dev/shm/raft-zig-{s}", .{encoded}, 0);
+        const root_path = try std.fmt.allocPrintSentinel(allocator, "/dev/shm/raftz-{s}", .{encoded}, 0);
         errdefer allocator.free(root_path);
         std.Io.Dir.cwd().createDir(std.testing.io, root_path, .default_dir) catch |err| return switch (err) {
             error.FileNotFound => error.SkipZigTest,

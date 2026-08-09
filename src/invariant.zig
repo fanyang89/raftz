@@ -1,5 +1,5 @@
 const std = @import("std");
-const options = @import("raft_zig_options");
+const options = @import("raftz_options");
 const grpc_log = @import("grpc_lite").log;
 
 pub const Kind = enum {

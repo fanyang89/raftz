@@ -74,23 +74,23 @@ pub fn build(b: *std.Build) void {
         @panic("gperftools/tcmalloc is incompatible with ThreadSanitizer");
     }
 
-    const raft_zig_options = b.addOptions();
-    raft_zig_options.addOption([]const u8, "version", manifest.version);
-    raft_zig_options.addOption(
+    const raftz_options = b.addOptions();
+    raftz_options.addOption([]const u8, "version", manifest.version);
+    raftz_options.addOption(
         bool,
         "invariant_checks",
         b.option(bool, "invariant-checks", "Enable fast Raft invariant checks") orelse
             (optimize == .Debug or optimize == .ReleaseSafe),
     );
-    raft_zig_options.addOption(bool, "sanitize_thread", sanitizers.thread orelse false);
+    raftz_options.addOption(bool, "sanitize_thread", sanitizers.thread orelse false);
 
-    const raft_zig = b.addModule("raft_zig", .{
+    const raftz = b.addModule("raftz", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    applySanitizers(raft_zig, sanitizers);
-    raft_zig.addOptions("raft_zig_options", raft_zig_options);
+    applySanitizers(raftz, sanitizers);
+    raftz.addOptions("raftz_options", raftz_options);
 
     const crc32c_dep = b.dependency("crc32c", .{});
     const crc32c = b.createModule(.{
@@ -102,7 +102,7 @@ pub fn build(b: *std.Build) void {
     applySanitizers(crc32c, sanitizers);
     addCrc32c(crc32c, crc32c_dep, target);
     crc32c.link_libcpp = true;
-    raft_zig.addImport("crc32c", crc32c);
+    raftz.addImport("crc32c", crc32c);
 
     // grpc-lite RPC backend (optional dependency).
     const grpc_dep = grpcLiteDependencyFromBuilder(
@@ -119,34 +119,34 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("nanozlog");
     grpc_lite.addImport("nanozlog", nanozlog);
-    raft_zig.addImport("grpc_lite", grpc_lite);
+    raftz.addImport("grpc_lite", grpc_lite);
 
-    const raft_zig_gperftools = if (enable_gperftools)
-        b.addModule("raft_zig_gperftools", .{
+    const raftz_gperftools = if (enable_gperftools)
+        b.addModule("raftz_gperftools", .{
             .root_source_file = b.path("src/gperftools.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "raft_zig", .module = raft_zig },
+                .{ .name = "raftz", .module = raftz },
                 .{ .name = "grpc_lite_gperftools", .module = grpc_dep.module("grpc_lite_gperftools") },
             },
         })
     else
         null;
     if (enable_gperftools) {
-        raft_zig.omit_frame_pointer = false;
-        applySanitizers(raft_zig_gperftools.?, sanitizers);
-        raft_zig_gperftools.?.omit_frame_pointer = false;
+        raftz.omit_frame_pointer = false;
+        applySanitizers(raftz_gperftools.?, sanitizers);
+        raftz_gperftools.?.omit_frame_pointer = false;
     }
 
     const library = b.addLibrary(.{
-        .name = "raft-zig",
-        .root_module = raft_zig,
+        .name = "raftz",
+        .root_module = raftz,
     });
     b.installArtifact(library);
 
     const unit_tests = b.addTest(.{
-        .root_module = raft_zig,
+        .root_module = raftz,
     });
     const run_unit_tests = addTestRun(b, unit_tests, &coverage);
 
@@ -157,12 +157,12 @@ pub fn build(b: *std.Build) void {
         .root_module = crc32c,
     });
     test_step.dependOn(&addTestRun(b, crc32c_tests, &coverage).step);
-    if (raft_zig_gperftools) |gperftools| {
+    if (raftz_gperftools) |gperftools| {
         const gperftools_test_module = b.createModule(.{
             .root_source_file = b.path("tests/gperftools_test.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "raft_zig_gperftools", .module = gperftools }},
+            .imports = &.{.{ .name = "raftz_gperftools", .module = gperftools }},
         });
         applySanitizers(gperftools_test_module, sanitizers);
         gperftools_test_module.omit_frame_pointer = false;
@@ -201,7 +201,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(spec.source),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "raft_zig", .module = raft_zig }},
+            .imports = &.{.{ .name = "raftz", .module = raftz }},
         });
         applySanitizers(module, sanitizers);
         const tests = b.addTest(.{ .name = spec.name, .root_module = module });
@@ -229,7 +229,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/harness/network.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "raft_zig", .module = raft_zig }},
+        .imports = &.{.{ .name = "raftz", .module = raftz }},
     });
     const upstream_step = b.step("test-upstream", "Run all adapted upstream test suites");
     const upstream_source_steps = [_]*std.Build.Step{
@@ -248,7 +248,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "raft_zig", .module = raft_zig },
+                .{ .name = "raftz", .module = raftz },
                 .{ .name = "upstream_manifest", .module = upstream_manifest },
                 .{ .name = "raft_test_network", .module = upstream_network },
             },
@@ -267,17 +267,17 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const raft_zig_fuzz = b.createModule(.{
+    const raftz_fuzz = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "raft_zig_options", .module = raft_zig_options.createModule() },
+            .{ .name = "raftz_options", .module = raftz_options.createModule() },
             .{ .name = "crc32c", .module = crc32c },
             .{ .name = "grpc_lite", .module = grpc_lite_fuzz_stub },
         },
     });
-    applySanitizers(raft_zig_fuzz, sanitizers);
+    applySanitizers(raftz_fuzz, sanitizers);
 
     const vopr_smoke_step = b.step("vopr-smoke", "Run Marionette integration smoke tests");
     const wal_durability_step = b.step("wal-durability", "Run Marionette WAL durability tests");
@@ -290,7 +290,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "raft_zig", .module = raft_zig },
+                .{ .name = "raftz", .module = raftz },
                 .{ .name = "marionette", .module = marionette_dep.module("marionette") },
             },
         });
@@ -308,7 +308,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "raft_zig", .module = raft_zig_fuzz },
+                .{ .name = "raftz", .module = raftz_fuzz },
                 .{ .name = "marionette", .module = marionette_dep.module("marionette") },
             },
         });
@@ -358,7 +358,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/simulation_test.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "raft_zig", .module = raft_zig_fuzz }},
+        .imports = &.{.{ .name = "raftz", .module = raftz_fuzz }},
     });
     applySanitizers(simulation_fuzz_module, sanitizers);
     const simulation_fuzz_tests = b.addTest(.{
@@ -370,19 +370,19 @@ pub fn build(b: *std.Build) void {
     simulation_fuzz_step.dependOn(&run_simulation_fuzz.step);
     fuzz_smoke_step.dependOn(&run_simulation_fuzz.step);
 
-    const minimal_node = addExample(b, "raft-zig-minimal-node", "examples/minimal_node.zig", raft_zig);
+    const minimal_node = addExample(b, "raftz-minimal-node", "examples/minimal_node.zig", raftz);
     b.installArtifact(minimal_node);
 
     const raft_benchmark_module = b.createModule(.{
         .root_source_file = b.path("benchmarks/raft.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "raft_zig", .module = raft_zig }},
+        .imports = &.{.{ .name = "raftz", .module = raftz }},
     });
     applySanitizers(raft_benchmark_module, sanitizers);
-    raft_benchmark_module.omit_frame_pointer = raft_zig.omit_frame_pointer;
+    raft_benchmark_module.omit_frame_pointer = raftz.omit_frame_pointer;
     const raft_benchmark = b.addExecutable(.{
-        .name = "raft-zig-bench-raft",
+        .name = "raftz-bench-raft",
         .root_module = raft_benchmark_module,
     });
     const run_raft_benchmark = b.addRunArtifact(raft_benchmark);
@@ -546,17 +546,17 @@ fn addExample(
     b: *std.Build,
     name: []const u8,
     source: []const u8,
-    raft_zig: *std.Build.Module,
+    raftz: *std.Build.Module,
 ) *std.Build.Step.Compile {
     const module = b.createModule(.{
         .root_source_file = b.path(source),
-        .target = raft_zig.resolved_target,
-        .optimize = raft_zig.optimize,
-        .imports = &.{.{ .name = "raft_zig", .module = raft_zig }},
+        .target = raftz.resolved_target,
+        .optimize = raftz.optimize,
+        .imports = &.{.{ .name = "raftz", .module = raftz }},
     });
-    module.sanitize_thread = raft_zig.sanitize_thread;
-    module.sanitize_c = raft_zig.sanitize_c;
-    module.omit_frame_pointer = raft_zig.omit_frame_pointer;
+    module.sanitize_thread = raftz.sanitize_thread;
+    module.sanitize_c = raftz.sanitize_c;
+    module.omit_frame_pointer = raftz.omit_frame_pointer;
     return b.addExecutable(.{
         .name = name,
         .root_module = module,

@@ -1,7 +1,7 @@
 //! Deterministic simulated network for Raft integration tests.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 const allocator = std.testing.allocator;
 const default_step_limit: usize = 10_000;

@@ -5,7 +5,7 @@
 //! ProgressTracker.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 const allocator = std.testing.allocator;
 const Progress = raft.Progress;

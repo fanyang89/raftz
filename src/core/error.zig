@@ -1,4 +1,4 @@
-//! Error model for raft-zig.
+//! Error model for raftz.
 //!
 //! Zig error unions cannot carry payloads, so the model is split:
 //!
@@ -11,7 +11,7 @@
 
 const std = @import("std");
 
-/// Universal error set for raft-zig. Every public API that can fail returns one
+/// Universal error set for raftz. Every public API that can fail returns one
 /// of these values.
 pub const Error = error{
     // Storage errors.

@@ -1,4 +1,4 @@
-//! raft-zig: a Zig implementation of the RAFT consensus algorithm.
+//! raftz: a Zig implementation of the RAFT consensus algorithm.
 //!
 //! This module is the public entry point. It re-exports the stable types that
 //! applications and integrations depend on. Lower-level modules are also

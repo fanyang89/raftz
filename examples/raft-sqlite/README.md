@@ -1,8 +1,8 @@
 # raft-sqlite
 
-A complete raft-zig example implementing a bounded, Raft-replicated SQLite
+A complete raftz example implementing a bounded, Raft-replicated SQLite
 database for Zig. It is an independent package under
-`examples/raft-sqlite`, so the raft-zig default build stays lightweight.
+`examples/raft-sqlite`, so the raftz default build stays lightweight.
 
 SQLite stores the durable state machine in `<data-dir>/state.sqlite3`. Each SQL
 transaction atomically persists user data, request deduplication records, and
@@ -26,7 +26,7 @@ reads use Raft ReadIndex before querying the local state machine.
 
 Zig 0.16.0 is required.
 
-From the raft-zig repository root:
+From the raftz repository root:
 
 ```sh
 mise run test-raft-sqlite
@@ -112,7 +112,7 @@ and cannot be reused.
 
 ## Storage
 
-The data directory contains both the `raft-zig` WAL and `state.sqlite3`. Keep
+The data directory contains both the `raftz` WAL and `state.sqlite3`. Keep
 and restore the directory as one unit, and stop the node before copying it.
 SQLite uses a rollback journal with `synchronous=EXTRA`. User changes and the
 durable applied cursor commit in one transaction.

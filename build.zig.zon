@@ -1,8 +1,8 @@
 .{
-    .name = .raft_zig,
+    .name = .raftz,
     .version = "0.1.0",
     .minimum_zig_version = "0.16.0",
-    .fingerprint = 0xd98872fa44f543c3,
+    .fingerprint = 0x717347960e069f75,
     .dependencies = .{
         .grpc_lite = .{
             .url = "https://codeload.github.com/fanyang89/grpc-lite/tar.gz/d45f929dd73f927fd515aa3b6e3188fd9b6714f0",

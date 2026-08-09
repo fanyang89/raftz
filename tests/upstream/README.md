@@ -8,7 +8,7 @@ Each inventory entry has one status:
 
 - `adapted`: implemented from a permissively licensed upstream test.
 - `reimplemented`: independently implemented from observable behavior.
-- `covered_elsewhere`: an existing raft-zig test already covers the behavior.
+- `covered_elsewhere`: an existing raftz test already covers the behavior.
 - `excluded`: outside scope, implementation-specific, or delegated to the primary baseline by source policy.
 - `blocked`: relevant, but the product or test harness lacks a prerequisite.
 - `planned`: accepted for future implementation.
@@ -31,7 +31,7 @@ Records are sorted by `path`, then `id`, and use these fields:
 - `path`: path relative to the pinned upstream revision.
 - `category`: lower-kebab-case behavior group.
 - `status`: one of the statuses above.
-- `target`: raft-zig source or test file providing coverage.
+- `target`: raftz source or test file providing coverage.
 - `rationale`: concise reason for the classification.
 
 `target` is required for `adapted`, `reimplemented`, and

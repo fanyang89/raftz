@@ -1,6 +1,6 @@
 # Testing
 
-raft-zig combines direct unit tests with integration, simulation, fault,
+raftz combines direct unit tests with integration, simulation, fault,
 sanitizer, fuzz, and upstream-derived behavioral suites.
 
 ## Default Suite

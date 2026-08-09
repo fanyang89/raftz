@@ -1,10 +1,10 @@
 // Copyright 2019 TiKV Project Authors
 // Copyright 2015 CoreOS, Inc.
 // Licensed under the Apache License, Version 2.0.
-// Adapted and modified for raft-zig; see ../LICENSE.upstream.
+// Adapted and modified for raftz; see ../LICENSE.upstream.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 const allocator = std.testing.allocator;
 

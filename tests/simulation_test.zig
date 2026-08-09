@@ -1,5 +1,5 @@
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const network_mod = @import("harness/network.zig");
 
 const Message = raft.Message;

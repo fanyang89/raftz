@@ -1,7 +1,7 @@
 # libelection
 
 `libelection` is a C SDK for durable, fixed-membership leader election. It uses
-raft-zig for consensus, an internal grpc-lite transport, and a WAL for restart
+raftz for consensus, an internal grpc-lite transport, and a WAL for restart
 recovery.
 
 ## Build

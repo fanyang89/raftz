@@ -4,7 +4,7 @@
 // OpenRaft revision 0d15d99844e8245ac917ce76ce2e4598665d0e40.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const network = @import("raft_test_network");
 
 const allocator = std.testing.allocator;

@@ -23,7 +23,7 @@ pub const Status = struct {
     /// Index of the last applied entry.
     applied: u64,
     /// Replication progress; `null` when the node is not the leader.
-    /// TODO raft-zig: replace with `*const ProgressTracker` once ported.
+    /// TODO raftz: replace with `*const ProgressTracker` once ported.
     progress: ?*const anyopaque = null,
 };
 

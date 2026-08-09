@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 pub const ServerConfig = struct {
     allocator: std.mem.Allocator,

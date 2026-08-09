@@ -110,7 +110,7 @@ configuration error from an ordinary connection failure.
 
 ## Security Boundary
 
-The raft-zig grpc-lite backend does not expose TLS or peer authentication.
+The raftz grpc-lite backend does not expose TLS or peer authentication.
 Stream metadata includes the protocol version, cluster ID, source node ID, and
 target node ID to detect misconfiguration, but a network attacker can forge it.
 
@@ -121,7 +121,7 @@ identity.
 
 ## Logging and Shutdown
 
-The transport shares raft-zig's process-global logger. Initialize it before
+The transport shares raftz's process-global logger. Initialize it before
 starting transports; otherwise logs are discarded.
 
 `stop` prevents new delivery and begins bounded graceful shutdown. The transport

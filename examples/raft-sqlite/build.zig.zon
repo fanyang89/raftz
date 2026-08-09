@@ -4,7 +4,7 @@
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x286becab5ae176f8,
     .dependencies = .{
-        .raft_zig = .{
+        .raftz = .{
             .path = "../..",
         },
     },

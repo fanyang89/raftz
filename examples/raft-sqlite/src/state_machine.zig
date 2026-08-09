@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const pb = @import("database_proto");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const sqlite = @import("sqlite.zig");
 
 pub const command_format_version: u32 = 1;

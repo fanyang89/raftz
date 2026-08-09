@@ -6,7 +6,7 @@
 //! the Figure-8 commit rule, and dynamic membership add.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const network_mod = @import("harness/network.zig");
 
 const allocator = std.testing.allocator;

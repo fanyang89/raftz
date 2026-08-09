@@ -1,5 +1,5 @@
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const fault = @import("harness/fault_fs.zig");
 
 const Fs = raft.Fs;

@@ -1,8 +1,8 @@
-# raft-zig Developer Guide
+# raftz Developer Guide
 
 ## Project Overview
 
-raft-zig is a Zig implementation of the Raft consensus algorithm. Project
+raftz is a Zig implementation of the Raft consensus algorithm. Project
 layout, build system conventions, and module style follow the author's Zig
 [gRPC runtime](https://github.com/fanyang89/grpc-lite).
 
@@ -64,7 +64,7 @@ Do not commit anything under `ref/`.
 
 ## Architecture
 
-raft-zig is organized in layered modules under `src/`:
+raftz is organized in layered modules under `src/`:
 
 - `core/` — plain data types, error model, role/state enums, and status
   snapshots.
@@ -90,7 +90,7 @@ raft-zig is organized in layered modules under `src/`:
 
 ## Scope Decisions
 
-The compatibility target is `raft-zig-core-v1`. Change this table before
+The compatibility target is `raftz-core-v1`. Change this table before
 implementing a feature outside the current decision.
 
 | Capability                         | Decision      | Notes                                                                       |

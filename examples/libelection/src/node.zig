@@ -1,6 +1,6 @@
 const std = @import("std");
 const linux = std.os.linux;
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const api = @import("api_types.zig");
 
 const Lifecycle = enum { created, running, stopping, stopped, failed };

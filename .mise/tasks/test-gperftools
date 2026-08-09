@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Test raft-zig with tcmalloc and gperftools"
+#MISE description="Test raftz with tcmalloc and gperftools"
 #MISE depends=["prepare-gperftools"]
 set -euo pipefail
 

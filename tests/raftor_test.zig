@@ -4,7 +4,7 @@
 //! campaign → propose → apply. Single-node only (multi-node requires RPC).
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const fault = @import("harness/fault_fs.zig");
 
 const allocator = std.testing.allocator;

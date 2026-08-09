@@ -1,10 +1,10 @@
 //! MPL-2.0 clean-room reimplementation of observable consensus behavior.
 //!
-//! These tests are independently expressed through raft-zig's public test
+//! These tests are independently expressed through raftz's public test
 //! harness and assert outcomes only; no upstream source or control flow is used.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const network = @import("raft_test_network");
 
 pub const inventory_target = "tests/upstream/hashicorp_raft/cases/consensus_test.zig";

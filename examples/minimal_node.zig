@@ -5,7 +5,7 @@
 //! lifecycle from initialization through election, commit, and apply.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 const CounterStateMachine = struct {
     count: u64 = 0,
@@ -72,7 +72,7 @@ pub fn main(init: std.process.Init) !void {
     const r = try raft.Raftor.create(allocator, config, sm.stateMachine());
     defer r.destroy();
 
-    raft.log.info(@src(), "raft-zig {s}: starting node {}", .{ raft.version, config.raft.id });
+    raft.log.info(@src(), "raftz {s}: starting node {}", .{ raft.version, config.raft.id });
 
     // Campaign to become leader.
     try r.campaign();

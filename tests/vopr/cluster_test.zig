@@ -1,6 +1,6 @@
 const std = @import("std");
 const mar = @import("marionette");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const adapter = @import("raft_adapter.zig");
 const fault_witness = @import("fault_witness.zig");
 

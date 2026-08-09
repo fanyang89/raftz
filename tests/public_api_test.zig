@@ -5,7 +5,7 @@
 //! refactors.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 test "stable public API compiles for downstream consumers" {
     comptime {

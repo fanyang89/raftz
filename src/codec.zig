@@ -2,7 +2,7 @@
 //!
 //! Defines the wire format for serializing `Message` structs to/from bytes.
 //! Used by the future TCP transport; the `LoopbackTransport` passes Message
-//! values directly without encoding. The format is internal to raft-zig and
+//! values directly without encoding. The format is internal to raftz and
 //! uses little-endian fixed-width fields throughout.
 
 const std = @import("std");

@@ -1,6 +1,6 @@
 # Membership
 
-raft-zig supports Raft joint-consensus changes and an optional durable
+raftz supports Raft joint-consensus changes and an optional durable
 membership record that binds node IDs to network addresses and a stable cluster
 identity.
 

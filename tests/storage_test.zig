@@ -6,7 +6,7 @@
 //! unavailable-snapshot trigger.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 const allocator = std.testing.allocator;
 

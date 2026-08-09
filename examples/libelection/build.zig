@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
         "optimize",
         "Prioritize performance, safety, or binary size",
     ) orelse .ReleaseSafe;
-    const raft_dependency = b.dependency("raft_zig", .{
+    const raft_dependency = b.dependency("raftz", .{
         .target = target,
         .optimize = optimize,
         .@"sanitize-c" = false,
@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
-            .{ .name = "raft_zig", .module = raft_dependency.module("raft_zig") },
+            .{ .name = "raftz", .module = raft_dependency.module("raftz") },
             .{ .name = "election_options", .module = options.createModule() },
         },
     });

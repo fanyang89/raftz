@@ -5,7 +5,7 @@ set -euo pipefail
 
 profile_dir=.zig-cache/profiles
 profile="$profile_dir/raft.prof"
-binary=zig-out/bin/raft-zig-bench-raft
+binary=zig-out/bin/raftz-bench-raft
 mkdir -p "$profile_dir"
 rm -f "$profile"
 zig build build-bench-raft -Dgperftools=true -Doptimize=ReleaseFast

@@ -1,5 +1,5 @@
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 const allocator = std.heap.smp_allocator;
 const cluster_a = [_]u8{1} ** 16;

@@ -1,10 +1,10 @@
 //! MPL-2.0 clean-room reimplementation of observable snapshot behavior.
 //!
-//! The scenarios use only raft-zig's deterministic harness and externally
+//! The scenarios use only raftz's deterministic harness and externally
 //! visible snapshot/log outcomes; no upstream source or control flow is used.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const network = @import("raft_test_network");
 
 const allocator = std.testing.allocator;

@@ -1,5 +1,5 @@
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 const network = @import("raft_test_network");
 
 pub const inventory_target = "tests/upstream/openraft/cases/invariants_test.zig";

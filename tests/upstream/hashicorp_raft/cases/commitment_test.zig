@@ -1,11 +1,11 @@
 //! MPL-2.0 clean-room reimplementation of observable commitment behavior.
 //!
-//! The scenarios translate only externally observable outcomes into raft-zig's
+//! The scenarios translate only externally observable outcomes into raftz's
 //! public APIs. Their fixture and assertions are independently authored, and no
 //! upstream source text is copied.
 
 const std = @import("std");
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 
 const allocator = std.testing.allocator;
 

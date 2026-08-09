@@ -1,6 +1,6 @@
 # Getting Started
 
-raft-zig provides a high-level `Raftor` server and a lower-level `RawNode`
+raftz provides a high-level `Raftor` server and a lower-level `RawNode`
 integration API. Start with `Raftor` unless the application must control Ready
 processing itself.
 
@@ -15,8 +15,8 @@ known commit in `build.zig.zon`:
 
 ```zig
 .dependencies = .{
-    .raft_zig = .{
-        .url = "https://codeload.github.com/fanyang89/raft-zig/tar.gz/<commit>",
+    .raftz = .{
+        .url = "https://codeload.github.com/fanyang89/raftz/tar.gz/<commit>",
         .hash = "<hash returned by zig fetch>",
     },
 },
@@ -27,7 +27,7 @@ Add the public module to the consuming target:
 ```zig
 const target = b.standardTargetOptions(.{});
 const optimize = b.standardOptimizeOption(.{});
-const raft_dependency = b.dependency("raft_zig", .{
+const raft_dependency = b.dependency("raftz", .{
     .target = target,
     .optimize = optimize,
 });
@@ -39,8 +39,8 @@ const app = b.addExecutable(.{
         .target = target,
         .optimize = optimize,
         .imports = &.{.{
-            .name = "raft_zig",
-            .module = raft_dependency.module("raft_zig"),
+            .name = "raftz",
+            .module = raft_dependency.module("raftz"),
         }},
     }),
 });
@@ -49,12 +49,12 @@ const app = b.addExecutable(.{
 Application code imports the module as follows:
 
 ```zig
-const raft = @import("raft_zig");
+const raft = @import("raftz");
 ```
 
 ## Initialize Logging
 
-raft-zig shares grpc-lite's process-global asynchronous logger. Initialize it
+raftz shares grpc-lite's process-global asynchronous logger. Initialize it
 before creating application threads and deinitialize it after every Raftor and
 transport has stopped:
 

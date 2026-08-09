@@ -1,11 +1,11 @@
 const std = @import("std");
-const raft_build = @import("raft_zig");
+const raft_build = @import("raftz");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const raft_dependency = b.dependency("raft_zig", .{
+    const raft_dependency = b.dependency("raftz", .{
         .target = target,
         .optimize = optimize,
     });
@@ -67,7 +67,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "database_proto", .module = database_proto },
             .{ .name = "grpc_lite", .module = grpc_module },
             .{ .name = "grpc_lite_protobuf", .module = grpc_protobuf_module },
-            .{ .name = "raft_zig", .module = raft_dependency.module("raft_zig") },
+            .{ .name = "raftz", .module = raft_dependency.module("raftz") },
             .{ .name = "sqlite_c", .module = sqlite_c },
         },
     });

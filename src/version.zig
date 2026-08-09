@@ -1,4 +1,4 @@
-const build_options = @import("raft_zig_options");
+const build_options = @import("raftz_options");
 
 pub const string = build_options.version;
 
