@@ -6,7 +6,7 @@ recovery.
 
 ## Build
 
-Zig 0.16.0 and a Linux C/C++ toolchain are required. ReleaseSafe is the default
+The latest stable Zig release and a Linux C/C++ toolchain are required. ReleaseSafe is the default
 optimization mode.
 
 ```sh

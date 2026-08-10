@@ -6,7 +6,7 @@ processing itself.
 
 ## Requirements
 
-- Zig 0.16.0
+- Latest stable Zig release through mise (minimum 0.16.0)
 - Linux for the default filesystem and `Raftor.run`
 - mise is optional but recommended for the pinned Zig toolchain
 

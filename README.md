@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/fanyang89/raftz/actions/workflows/ci.yml/badge.svg)](https://github.com/fanyang89/raftz/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/fanyang89/raftz/graph/badge.svg)](https://codecov.io/gh/fanyang89/raftz)
-[![Zig](https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
+[![Zig](https://img.shields.io/badge/Zig-stable-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 [![License](https://img.shields.io/github/license/fanyang89/raftz)](LICENSE)
 
 An embeddable [Raft](https://raft.github.io/) consensus library for Zig with a
@@ -29,7 +29,8 @@ five established Raft implementations.
 
 ## Quick Start
 
-raftz requires Zig 0.16.0. [mise](https://mise.jdx.dev/) is recommended for
+raftz requires Zig 0.16.0 or newer and tracks the latest stable release with
+[mise](https://mise.jdx.dev/), which is recommended for
 tool installation and project tasks, but direct `zig build` commands also work.
 
 There are no release tags yet. Pin a commit when adding the package to

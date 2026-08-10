@@ -14,7 +14,7 @@ layout, build system conventions, and module style follow the author's Zig
 
 ## Toolchain
 
-- Zig 0.16.0
+- Latest stable Zig release through mise
 - mise for task runners
 
 ## Commands

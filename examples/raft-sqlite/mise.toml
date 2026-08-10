@@ -1,5 +1,5 @@
 [tools]
-zig = "0.16.0"
+zig = "latest"
 
 [tasks.build]
 description = "Build raft-sqlite"

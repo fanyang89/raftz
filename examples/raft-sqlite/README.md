@@ -24,7 +24,7 @@ reads use Raft ReadIndex before querying the local state machine.
 
 ## Build
 
-Zig 0.16.0 is required.
+The latest stable Zig release is required.
 
 From the raftz repository root:
 

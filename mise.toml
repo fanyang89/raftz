@@ -1,5 +1,5 @@
 [tools]
-zig = "0.16.0"
+zig = "latest"
 actionlint = "1.7.12"
 "github:jiacai2050/zigcli" = "0.6.2"
 
