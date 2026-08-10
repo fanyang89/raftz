@@ -1,5 +1,5 @@
 [tools]
-zig = "latest"
+zig = "0.16.0"
 
 [tasks.build]
 description = "Build libelection"
