@@ -2,6 +2,8 @@ const std = @import("std");
 const testing = std.testing;
 
 var ptr_log: ?*NanoZlog = null;
+var next_generation: std.atomic.Value(u64) = .init(1);
+var active_generation: std.atomic.Value(u64) = .init(0);
 
 const NanoZlog = @import("nanozlog.zig").NanoZlog;
 
@@ -33,6 +35,7 @@ pub fn initNanoZlog(
     if (ptr_log) |_| {
         return Error.LoggerAlreadyInitialized;
     } else {
+        const generation = reserveGeneration() orelse return Error.LoggerInitializationFailed;
         const ptr_nanozlog = allocator.create(NanoZlog) catch
             return Error.LoggerInitializationFailed;
         errdefer allocator.destroy(ptr_nanozlog);
@@ -41,6 +44,7 @@ pub fn initNanoZlog(
         ptr_nanozlog.*.start() catch
             return Error.LoggerInitializationFailed;
 
+        active_generation.store(generation, .release);
         _is_shutting_down.store(false, .release);
         ptr_log = ptr_nanozlog;
     }
@@ -50,9 +54,10 @@ pub fn initNanoZlog(
 pub fn deinitNanoZlog(allocator: std.mem.Allocator) void {
     if (ptr_log) |logger| {
         _is_shutting_down.store(true, .release);
+        ptr_log = null;
         logger.deinit();
         allocator.destroy(logger);
-        ptr_log = null;
+        active_generation.store(0, .release);
     }
 }
 
@@ -156,13 +161,38 @@ test "thread deinit" {
     try testing.expect(ptr_log.?._thread_buffers.items.len == 0);
 }
 
+fn reserveGeneration() ?u64 {
+    var current = next_generation.load(.monotonic);
+    while (current != std.math.maxInt(u64)) {
+        if (next_generation.cmpxchgWeak(current, current + 1, .monotonic, .monotonic)) |actual| {
+            current = actual;
+        } else {
+            return current;
+        }
+    }
+    return null;
+}
+
 fn LogId(comptime src: std.builtin.SourceLocation) type {
     return struct {
         const _src = src;
+        var generation: std.atomic.Value(u64) = .init(0);
+        var generation_mutex: std.atomic.Mutex = .unlocked;
         var log_id: std.atomic.Value(u32) = .init(0);
         var limit_ns: std.atomic.Value(i64) = .init(0);
         var log_once: std.atomic.Value(bool) = .init(false);
     };
+}
+
+fn prepareLogSite(comptime S: type, generation: u64) void {
+    if (S.generation.load(.acquire) == generation) return;
+    while (!S.generation_mutex.tryLock()) std.atomic.spinLoopHint();
+    defer S.generation_mutex.unlock();
+    if (S.generation.load(.monotonic) == generation) return;
+    S.log_id.store(0, .monotonic);
+    S.limit_ns.store(0, .monotonic);
+    S.log_once.store(false, .monotonic);
+    S.generation.store(generation, .release);
 }
 
 fn log(
@@ -175,6 +205,7 @@ fn log(
 
     if (ptr_log) |logger| {
         if (_is_shutting_down.load(.acquire)) return;
+        prepareLogSite(S, active_generation.load(.acquire));
         const tsc = logger.rdtsc();
         logger.log(tsc, &S.log_id, src, message_level, format, args);
     }
@@ -190,6 +221,33 @@ test "log" {
     try testing.expectStringEndsWith(buffer[0..fixed.end], "Test log 5\n");
 }
 
+fn logGenerationInteger(value: usize) void {
+    info(@src(), "generation integer {d}", .{value});
+}
+
+fn logGenerationString(value: []const u8) void {
+    info(@src(), "generation string {s}", .{value});
+}
+
+test "reinitialization registers callsites for the new logger generation" {
+    var first_buffer: [4096]u8 = undefined;
+    var first_fixed = std.Io.Writer.fixed(&first_buffer);
+    try initNanoZlog(testing.allocator, testing.io, &first_fixed, .{});
+    logGenerationInteger(1);
+    deinitNanoZlog(testing.allocator);
+
+    var second_buffer: [4096]u8 = undefined;
+    var second_fixed = std.Io.Writer.fixed(&second_buffer);
+    try initNanoZlog(testing.allocator, testing.io, &second_fixed, .{});
+    logGenerationString("fresh");
+    logGenerationInteger(2);
+    deinitNanoZlog(testing.allocator);
+
+    const written = second_buffer[0..second_fixed.end];
+    try testing.expect(std.mem.indexOf(u8, written, "generation string fresh") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "generation integer 2") != null);
+}
+
 fn logi(
     comptime min_interval: i64,
     comptime message_level: Level,
@@ -201,6 +259,7 @@ fn logi(
 
     if (ptr_log) |logger| {
         if (_is_shutting_down.load(.acquire)) return;
+        prepareLogSite(S, active_generation.load(.acquire));
 
         const tsc = logger.rdtsc();
         const ns = logger.tsc2ns(tsc);
@@ -235,6 +294,7 @@ fn logz(
 
     if (ptr_log) |logger| {
         if (_is_shutting_down.load(.acquire)) return;
+        prepareLogSite(S, active_generation.load(.acquire));
 
         if (S.log_once.load(.acquire) == true) return;
         S.log_once.store(true, .release);
