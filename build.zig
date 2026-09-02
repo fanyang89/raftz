@@ -174,6 +174,8 @@ pub fn build(b: *std.Build) void {
     }
     const rpc_test_step = b.step("test-rpc", "Run grpc transport tests");
     const grpc_raftor_test_step = b.step("test-grpc-raftor", "Run grpc Raftor integration tests");
+    // Full-suite grpc processes are serialized to stay within host worker limits.
+    var grpc_full_test_tail: *std.Build.Step = &run_unit_tests.step;
     const test_specs = [_]TestSpec{
         .{ .name = "public-api", .source = "tests/public_api_test.zig" },
         .{ .name = "storage", .source = "tests/storage_test.zig" },
@@ -205,10 +207,20 @@ pub fn build(b: *std.Build) void {
         });
         applySanitizers(module, sanitizers);
         const tests = b.addTest(.{ .name = spec.name, .root_module = module });
-        const run_tests = addTestRun(b, tests, &coverage);
-        test_step.dependOn(&run_tests.step);
-        if (std.mem.eql(u8, spec.name, "rpc")) rpc_test_step.dependOn(&run_tests.step);
-        if (std.mem.eql(u8, spec.name, "grpc-raftor")) grpc_raftor_test_step.dependOn(&run_tests.step);
+        const is_rpc = std.mem.eql(u8, spec.name, "rpc");
+        const is_grpc_raftor = std.mem.eql(u8, spec.name, "grpc-raftor");
+        if (is_rpc or is_grpc_raftor) {
+            const focused_run = addTestRun(b, tests, &coverage);
+            if (is_rpc) rpc_test_step.dependOn(&focused_run.step);
+            if (is_grpc_raftor) grpc_raftor_test_step.dependOn(&focused_run.step);
+
+            const full_run = addTestRun(b, tests, &coverage);
+            full_run.step.dependOn(grpc_full_test_tail);
+            grpc_full_test_tail = &full_run.step;
+            test_step.dependOn(&full_run.step);
+        } else {
+            test_step.dependOn(&addTestRun(b, tests, &coverage).step);
+        }
     }
 
     const upstream_specs = [_]TestSpec{
