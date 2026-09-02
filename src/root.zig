@@ -68,6 +68,7 @@ const cluster_membership_mod = @import("cluster_membership.zig");
 const rpc_inbound_mailbox = @import("rpc/inbound_mailbox.zig");
 const rpc_peer_manager = @import("rpc/peer_manager.zig");
 const rpc_grpc_transport = @import("rpc/grpc_lite_transport.zig");
+const rpc_grpc_multi_transport = @import("rpc/grpc_lite_multi_transport.zig");
 
 pub const core = .{
     .primitives = primitives,
@@ -290,6 +291,8 @@ pub const PeerManager = rpc_peer_manager.PeerManager;
 pub const PeerLifecycleState = rpc_peer_manager.LifecycleState;
 pub const GrpcLiteTransport = rpc_grpc_transport.GrpcLiteTransport;
 pub const GrpcLiteTransportConfig = rpc_grpc_transport.Config;
+pub const GrpcLiteMultiTransport = rpc_grpc_multi_transport.GrpcLiteMultiTransport;
+pub const GrpcLiteMultiTransportConfig = rpc_grpc_multi_transport.Config;
 
 pub const version = version_info.string;
 
@@ -347,6 +350,7 @@ test "re-exported modules compile" {
     _ = rpc_inbound_mailbox;
     _ = rpc_peer_manager;
     _ = rpc_grpc_transport;
+    _ = rpc_grpc_multi_transport;
     _ = version_info;
 }
 // KCOV_EXCL_STOP

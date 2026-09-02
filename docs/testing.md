@@ -37,6 +37,7 @@ mise run test-libelection
 ```bash
 mise run test-rpc
 mise run test-grpc-raftor
+mise run test-grpc-multi-raft
 mise run test-raft-sqlite
 mise run test-libelection
 mise run test-upstream

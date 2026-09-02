@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Run grpc Multi-Raft integration tests"
+set -euo pipefail
+
+exec zig build test-grpc-multi-raft --summary all "$@"

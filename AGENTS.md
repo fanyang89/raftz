@@ -23,6 +23,7 @@ layout, build system conventions, and module style follow the author's Zig
 mise run build
 mise run test
 mise run test-release-safe
+mise run test-grpc-multi-raft
 mise run test-raft-sqlite
 mise run test-libelection
 mise run demo-libelection-vip

@@ -92,10 +92,37 @@ reject conflicting addresses for the same physical peer. Peer events also carry
 a group ID so snapshot and reachability failures reach the correct `Raftor`.
 
 `encodeEnvelope` and `decodeEnvelope` define the outer binary envelope while
-reusing the existing Message codec unchanged. `LoopbackMultiNetwork` provides a
-built-in process-local shared transport. A multiplexed grpc-lite backend is not
-part of this MVP; applications can implement `MultiTransport` with the envelope
-codec without changing Raft core messages.
+reusing the existing Message codec unchanged. Built-in implementations are:
+
+- `LoopbackMultiNetwork` for deterministic process-local routing.
+- `GrpcLiteMultiTransport` for persistent node-to-node streams shared by all
+  groups.
+
+The grpc implementation opens one directed stream per physical peer, validates
+node and cluster identity, reference-counts group peer registrations, and
+rejects conflicting addresses declared by different groups. Snapshot failures
+remain group-qualified.
+
+A networked host typically owns the transport separately:
+
+```zig
+const transport = try raft.GrpcLiteMultiTransport.create(allocator, .{
+    .identity = .{ .cluster_id = cluster_id, .node_id = node_id },
+    .listen_addr = "0.0.0.0:9000",
+});
+defer transport.destroy();
+
+const host = try raft.MultiRaftHost.create(
+    allocator,
+    .{ .node_id = node_id, .data_dir = data_dir },
+    transport.transport(),
+);
+defer host.destroy();
+```
+
+Destroy the host before the caller-owned transport. All groups sharing one
+transport must use the same physical cluster identity and consistent addresses
+for each node.
 
 Unknown inbound group IDs are dropped and counted by
 `unknownGroupMessageCount`; they do not fail other groups.

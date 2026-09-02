@@ -116,7 +116,7 @@ for the processing order and ownership contracts.
 | Core Raft, ReadIndex, learners, joint consensus | Supported |
 | MemoryStorage, WAL, snapshots, restart | Supported |
 | Multi-Raft cooperative host and shared envelope transport | Supported MVP |
-| Multiplexed grpc-lite MultiTransport backend | Not implemented |
+| Multiplexed grpc-lite MultiTransport backend | Supported |
 | grpc-lite authentication and TLS | Not provided by raftz |
 | Multi-tenant group hosting, disaster-recovery import | Out of scope or not implemented |
 

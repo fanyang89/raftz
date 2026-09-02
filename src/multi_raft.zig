@@ -131,6 +131,17 @@ const GroupTransport = struct {
     }
 
     fn enqueueMessage(self: *GroupTransport, message: Message) Error!void {
+        if (self.shared.identity()) |identity| {
+            const valid_source = if (message.msg_type == .transfer_leader)
+                message.from == identity.node_id or self.peers.contains(message.from)
+            else
+                self.peers.contains(message.from);
+            if (!valid_source) {
+                var owned = message;
+                owned.deinit(self.allocator);
+                return;
+            }
+        }
         const stopped = self.stopped.load(.acquire);
         if (stopped or self.inbox.items.len >= self.max_inbox_messages) {
             var owned = message;

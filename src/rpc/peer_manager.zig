@@ -39,6 +39,7 @@ pub const EventSink = struct {
 
 pub const Config = struct {
     identity: transport.TransportIdentity,
+    method_path: []const u8 = stream_method_path,
     stream_limits: grpc.StreamBufferLimits,
     reconnect_initial_delay_ns: u64,
     reconnect_max_delay_ns: u64,
@@ -276,7 +277,7 @@ fn workerMain(peer: *Peer) void {
             .{ .key = target_node_key, .value = &target_bytes },
         };
         var callback_context = CallbackContext{ .peer = peer, .generation = generation };
-        const opened = channel.openStream(stream_method_path, .{
+        const opened = channel.openStream(peer.manager.config.method_path, .{
             .metadata = &metadata,
             .limits = peer.manager.config.stream_limits,
         }, .{
