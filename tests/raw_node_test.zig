@@ -526,6 +526,37 @@ test "raw_node: getReady allocation failures preserve pending data" {
     try std.testing.expect(reached_success);
 }
 
+test "raw_node: async Ready persistence acknowledges records in order" {
+    var storage = MemoryStorage.init();
+    defer storage.deinit(allocator);
+    try seedStorage(&storage, &.{1});
+
+    var node = try RawNode.init(allocator, makeConfig(1), storage.asStorage());
+    defer node.deinit();
+    try campaignLeader(&node, &storage);
+
+    try node.propose("", "first");
+    var first = try node.getReady();
+    defer first.deinit(allocator);
+    try storage.append(allocator, first.entries);
+    const first_number = first.number;
+    try node.advanceAppendAsync(first);
+
+    try node.propose("", "second");
+    var second = try node.getReady();
+    defer second.deinit(allocator);
+    try storage.append(allocator, second.entries);
+    const second_number = second.number;
+    try node.advanceAppendAsync(second);
+
+    try std.testing.expectEqual(@as(u64, 1), node.raftConst().raft_log.persisted);
+    node.onPersistReady(first_number);
+    try std.testing.expectEqual(@as(u64, 2), node.raftConst().raft_log.persisted);
+    node.onPersistReady(second_number);
+    try std.testing.expectEqual(@as(u64, 3), node.raftConst().raft_log.persisted);
+    try std.testing.expect(node.hasReady());
+}
+
 test "raw_node: persisting entries advances commit on a single-node leader" {
     var storage = MemoryStorage.init();
     defer storage.deinit(allocator);

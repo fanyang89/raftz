@@ -19,7 +19,7 @@ before 1.0.
 | Consensus | Integration | Durability and transport |
 | --- | --- | --- |
 | Pre-vote and check-quorum options | Low-level `RawNode` Ready/Advance API | In-memory and segmented WAL storage |
-| Joint-consensus membership changes | High-level `Raftor` event loop | CRC32C records and entry verification |
+| Joint-consensus membership changes | High-level `Raftor` event loop and opt-in Async Ready group commit | CRC32C records and entry verification |
 | Safe and lease-based ReadIndex | Callback-based proposals and reads | Snapshots, compaction, and restart recovery |
 | Leadership transfer and learners | Pluggable state machine and storage | Loopback and grpc-lite transports |
 

@@ -363,6 +363,7 @@ pub const Raftor = struct {
         if (config.proposal_drain_budget == 0) return error.InvalidConfig;
         if (config.read_index_drain_budget == 0) return error.InvalidConfig;
         if (config.max_queued_read_indexes == 0 or config.max_queued_read_index_bytes == 0) return error.InvalidConfig;
+        if (config.async_ready and config.async_ready_max_inflight == 0) return error.InvalidConfig;
         if (startup_mode != .restart) try validateFreshStateMachine(dependencies.state_machine);
         try self.prepareStorage(startup_mode);
         var initial_state = try self.storage.initialState(allocator);
@@ -429,6 +430,8 @@ pub const Raftor = struct {
             initial_applied_index,
             initial_membership,
             initial_state.membership_index,
+            config.async_ready,
+            config.async_ready_max_inflight,
         );
         errdefer self.ready_processor.deinit();
         try self.ready_processor.hydrateTransport();
@@ -684,14 +687,19 @@ pub const Raftor = struct {
             had_work = true;
         }
         while (try self.processReady()) had_work = true;
+        if (try self.flushReadyInternal()) had_work = true;
         return had_work;
     }
 
     fn tickImpl(self: *Raftor) Error!bool {
         if (self.driverError()) |err| return err;
-        if (self.ready_processor.phase() != null) {
+        if (!self.ready_processor.canAcceptInput()) {
             _ = try self.processReady();
+            _ = try self.flushReadyInternal();
             return true;
+        }
+        if (self.ready_processor.hasStagedReady()) {
+            _ = try self.flushReadyInternal();
         }
         self.tick_count += 1;
 
@@ -779,6 +787,7 @@ pub const Raftor = struct {
         while (try self.processReady()) {
             had_work = true;
         }
+        if (try self.flushReadyInternal()) had_work = true;
 
         self.maybeAutoSnapshot() catch |e| switch (e) {
             error.SnapshotOutOfDate => log.debug(@src(), "snapshot attempt skipped: {s}", .{@errorName(e)}),
@@ -881,14 +890,17 @@ pub const Raftor = struct {
         try self.enterEventLoop();
         defer self.leaveEventLoop();
         if (self.driverError()) |err| return err;
+        _ = try self.flushReadyInternal();
         try self.raw_node.campaign();
         while (try self.processReady()) {}
+        _ = try self.flushReadyInternal();
     }
 
     pub fn transferLeader(self: *Raftor, target_id: u64) Error!void {
         try self.enterEventLoop();
         defer self.leaveEventLoop();
         if (self.driverError()) |err| return err;
+        _ = try self.flushReadyInternal();
         try self.raw_node.transferLeader(target_id);
     }
 
@@ -904,6 +916,7 @@ pub const Raftor = struct {
         try self.enterEventLoop();
         defer self.leaveEventLoop();
         if (self.driverError()) |err| return err;
+        _ = try self.flushReadyInternal();
         const membership = self.ready_processor.getClusterMembership() orelse return error.MissingClusterMembership;
         try rejectRetiredId(membership.*, id);
         if (addr.len == 0) return error.PeerAddressMissing;
@@ -916,6 +929,7 @@ pub const Raftor = struct {
         try self.enterEventLoop();
         defer self.leaveEventLoop();
         if (self.driverError()) |err| return err;
+        _ = try self.flushReadyInternal();
         try self.proposeNodeAddressChangeImpl(change_type, id, addr, false);
     }
 
@@ -959,6 +973,7 @@ pub const Raftor = struct {
         try self.enterEventLoop();
         defer self.leaveEventLoop();
         if (self.driverError()) |err| return err;
+        _ = try self.flushReadyInternal();
         if (self.ready_processor.getClusterMembership()) |membership| try rejectRetiredId(membership.*, id);
         var cc = ConfChangeV2{ .changes = try self.allocator.alloc(types.ConfChangeSingle, 1) };
         defer self.allocator.free(cc.changes);
@@ -981,6 +996,7 @@ pub const Raftor = struct {
 
     fn takeSnapshotImpl(self: *Raftor) Error!void {
         if (self.driverError()) |err| return err;
+        _ = try self.flushReadyInternal();
         const applied_index = self.ready_processor.getAppliedIndex();
         if (applied_index == 0) return;
 
@@ -1129,8 +1145,28 @@ pub const Raftor = struct {
         return did_work;
     }
 
+    /// Force all staged Async Ready writes through a durability barrier.
+    pub fn flushReady(self: *Raftor) Error!bool {
+        try self.enterEventLoop();
+        defer self.leaveEventLoop();
+        if (self.driverError()) |err| return err;
+        return self.flushReadyInternal();
+    }
+
     fn processReady(self: *Raftor) Error!bool {
         const did_work = self.ready_processor.process() catch |err| {
+            self.latchReadyError();
+            return err;
+        };
+        if (self.ready_processor.terminalError()) |err| {
+            self.enterTerminal(err);
+            return err;
+        }
+        return did_work;
+    }
+
+    fn flushReadyInternal(self: *Raftor) Error!bool {
+        const did_work = self.ready_processor.flush() catch |err| {
             self.latchReadyError();
             return err;
         };

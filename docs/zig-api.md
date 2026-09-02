@@ -35,6 +35,13 @@ bounded amount of transport work, drains request queues, processes Ready
 batches, and triggers snapshots. `run` repeatedly calls `tick` and blocks until
 `stop` is requested.
 
+Set `RaftorConfig.async_ready` to opt into event-loop-local Async Ready group
+commit. `async_ready_max_inflight` bounds the number of staged Ready batches.
+The mode uses no background threads: all storage mutation and sync calls remain
+serialized on the event-loop thread. `tick`, `poll`, and `campaign` flush staged
+work before returning. `flushReady` provides an explicit barrier for integrations
+that drive individual phases with `processReadyStep`.
+
 Only one event-loop operation may mutate a Raftor at a time. Proposal and
 read-index ingress queues are thread-safe. When callers use them concurrently,
 the allocator passed to Raftor must also be thread-safe because request buffers
@@ -109,9 +116,16 @@ integration repeatedly performs this sequence:
 7. Call `advanceApply` and deinitialize every owned value.
 
 The exact durable order is described in [Architecture](architecture.md). A
-latency-optimized integration may send `Ready.messages()` before persistence,
-but must send `Ready.light.messages` after persistence when
-`Ready.is_persisted_msg` is true. Never send the same message in both phases.
+latency-optimized integration may send `Ready.messages()` before persistence
+and must send `Ready.persistedMessages()` only after persistence. Never send the
+same message in both phases.
+
+For Async Ready, write every Ready update so it is readable through `Storage`,
+call `advanceAppendAsync`, and retain its number. Ready batches must become
+durable in order. After a successful group sync, call `onPersistReady` with the
+highest durable number; this acknowledges every earlier Ready in the group.
+Apply only the entries actually completed and report that index with
+`advanceApplyTo`.
 
 ## Ownership
 

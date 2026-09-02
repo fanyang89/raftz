@@ -132,11 +132,15 @@ pub const Ready = struct {
         self.* = .{};
     }
 
-    /// Messages the integrator should dispatch. Persisted-message flag
-    /// suppresses the light.messages slice so callers don't double-send
-    /// before persistence completes.
+    /// Messages that may be dispatched before this Ready is durable.
     pub fn messages(self: Ready) []const Message {
         if (self.is_persisted_msg) return &.{};
+        return self.light.messages;
+    }
+
+    /// Messages that must wait until this Ready is durable.
+    pub fn persistedMessages(self: Ready) []const Message {
+        if (!self.is_persisted_msg) return &.{};
         return self.light.messages;
     }
 };

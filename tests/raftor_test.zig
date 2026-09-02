@@ -177,6 +177,7 @@ const RecordingTransport = struct {
     stop_call_count: usize = 0,
     delivered_message_count: usize = 0,
     delivered_peer_event_count: usize = 0,
+    sent_message_count: usize = 0,
     stopped: bool = false,
     before_message_ctx: ?*anyopaque = null,
     before_message: ?*const fn (*anyopaque) void = null,
@@ -264,7 +265,9 @@ const RecordingTransport = struct {
         try self.appendEvent(.remove, node_id, "");
     }
 
-    fn send(_: *anyopaque, _: []const raft.Message) raft.Error!void {}
+    fn send(ctx: *anyopaque, messages: []const raft.Message) raft.Error!void {
+        cast(ctx).sent_message_count += messages.len;
+    }
 
     fn setMessageCallback(ctx: *anyopaque, callback: ?raft.MessageCallback) void {
         const self = cast(ctx);
@@ -649,6 +652,12 @@ fn stageSnapshotAndSuffix(r: *Raftor) !void {
 fn processOneReady(r: *Raftor) !void {
     try std.testing.expect(try r.processReadyStep());
     while (r.getReadyPhase() != null) try std.testing.expect(try r.processReadyStep());
+}
+
+fn stageAsyncReadies(r: *Raftor) !void {
+    while (r.getRawNode().hasReady() or r.getReadyPhase() != raft.ReadyPhase.awaiting_flush) {
+        try std.testing.expect(try r.processReadyStep());
+    }
 }
 
 const ProposalTester = struct {
@@ -1162,6 +1171,15 @@ test "raftor: read-index drain budget preserves transport progress" {
 
     _ = try r.tick();
     try std.testing.expect(reads[2].completed);
+}
+
+test "raftor: zero Async Ready inflight limit is invalid" {
+    var sm = MockStateMachine.init(allocator);
+    defer sm.deinit();
+    var config = makeConfig(1);
+    config.async_ready = true;
+    config.async_ready_max_inflight = 0;
+    try std.testing.expectError(error.InvalidConfig, Raftor.create(allocator, config, sm.stateMachine()));
 }
 
 test "raftor: zero transport poll budget is invalid" {
@@ -1903,6 +1921,174 @@ test "raftor: startup mode validates and reloads storage" {
     defer r.destroy();
     try std.testing.expectEqual(@as(u64, 7), r.getStatus().term);
     try std.testing.expectEqual(@as(u64, 1), r.getRawNode().raftConst().vote);
+}
+
+test "raftor: poll flushes Async Ready before returning" {
+    var machine = MockStateMachine.init(allocator);
+    defer machine.deinit();
+    var config = makeConfig(1);
+    config.async_ready = true;
+
+    const r = try Raftor.create(allocator, config, machine.stateMachine());
+    defer r.destroy();
+    try r.getRawNode().campaign();
+    try std.testing.expect(try r.poll());
+
+    try std.testing.expectEqual(@as(?raft.ReadyPhase, null), r.getReadyPhase());
+    try std.testing.expectEqual(StateRole.leader, r.getStatus().role);
+    try std.testing.expectEqual(@as(u64, 1), r.getStatus().applied_index);
+}
+
+test "raftor: Async Ready groups multiple batches into one sync" {
+    var storage = raft.MemoryStorage.init();
+    defer storage.deinit(allocator);
+    var failing_storage = SyncFailingStorage{ .inner = storage.asWritableStorage() };
+    var transport = raft.NoopTransport.init(allocator);
+    defer transport.deinit();
+    var machine = MockStateMachine.init(allocator);
+    defer machine.deinit();
+    var config = makeConfig(1);
+    config.async_ready = true;
+    config.async_ready_max_inflight = 8;
+
+    const r = try Raftor.createWithDependencies(allocator, config, .bootstrap, .{
+        .storage = failing_storage.writableStorage(),
+        .transport = transport.transport(),
+        .state_machine = machine.stateMachine(),
+    });
+    defer r.destroy();
+
+    try r.getRawNode().campaign();
+    try stageAsyncReadies(r);
+    try std.testing.expectEqual(raft.ReadyPhase.awaiting_flush, r.getReadyPhase().?);
+    try std.testing.expectEqual(@as(u64, 0), r.getRawNode().raftConst().raft_log.persisted);
+
+    try r.getRawNode().propose("", "payload");
+    try stageAsyncReadies(r);
+    const syncs_before = failing_storage.successful_syncs;
+    try std.testing.expect(try r.flushReady());
+
+    try std.testing.expectEqual(syncs_before + 1, failing_storage.successful_syncs);
+    try std.testing.expectEqual(@as(?raft.ReadyPhase, null), r.getReadyPhase());
+    try std.testing.expectEqual(@as(u64, 2), r.getStatus().applied_index);
+    try std.testing.expectEqual(@as(usize, 2), machine.applied.items.len);
+}
+
+test "raftor: Async Ready sends leader messages before the durability barrier" {
+    var storage = raft.MemoryStorage.init();
+    defer storage.deinit(allocator);
+    var failing_storage = SyncFailingStorage{ .inner = storage.asWritableStorage() };
+    var transport = RecordingTransport.init(allocator);
+    defer transport.deinit();
+    var machine = MockStateMachine.init(allocator);
+    defer machine.deinit();
+    const peers = [_]raft.Peer{ .{ .id = 1 }, .{ .id = 2 } };
+    var config = makeConfig(1);
+    config.initial_peers = &peers;
+    config.async_ready = true;
+
+    const r = try Raftor.createWithDependencies(allocator, config, .bootstrap, .{
+        .storage = failing_storage.writableStorage(),
+        .transport = transport.transport(),
+        .state_machine = machine.stateMachine(),
+    });
+    defer r.destroy();
+
+    try r.getRawNode().campaign();
+    try stageAsyncReadies(r);
+    try std.testing.expectEqual(@as(usize, 0), transport.sent_message_count);
+    try std.testing.expect(try r.flushReady());
+    try std.testing.expect(transport.sent_message_count > 0);
+
+    transport.sent_message_count = 0;
+    try r.getRawNode().step(.{
+        .msg_type = .request_vote_response,
+        .from = 2,
+        .to = 1,
+        .term = r.getRawNode().raftConst().term,
+    });
+    try stageAsyncReadies(r);
+    try std.testing.expectEqual(StateRole.leader, r.getRawNode().raftConst().state);
+    try std.testing.expect(transport.sent_message_count > 0);
+}
+
+test "raftor: Async Ready follower messages wait for successful sync" {
+    var storage = raft.MemoryStorage.init();
+    defer storage.deinit(allocator);
+    var failing_storage = SyncFailingStorage{ .inner = storage.asWritableStorage() };
+    var transport = RecordingTransport.init(allocator);
+    defer transport.deinit();
+    var machine = MockStateMachine.init(allocator);
+    defer machine.deinit();
+    const peers = [_]raft.Peer{ .{ .id = 1 }, .{ .id = 2 } };
+    var config = makeConfig(1);
+    config.initial_peers = &peers;
+    config.async_ready = true;
+
+    const r = try Raftor.createWithDependencies(allocator, config, .bootstrap, .{
+        .storage = failing_storage.writableStorage(),
+        .transport = transport.transport(),
+        .state_machine = machine.stateMachine(),
+    });
+    defer r.destroy();
+
+    const entries = try allocator.alloc(raft.Entry, 1);
+    entries[0] = .{ .term = 1, .index = 1 };
+    try r.getRawNode().step(.{
+        .msg_type = .append,
+        .from = 2,
+        .to = 1,
+        .term = 1,
+        .index = 0,
+        .log_term = 0,
+        .commit = 1,
+        .entries = entries,
+    });
+    try stageAsyncReadies(r);
+    try std.testing.expectEqual(@as(usize, 0), transport.sent_message_count);
+
+    failing_storage.fail_sync = true;
+    try std.testing.expectError(error.WalSyncFailed, r.flushReady());
+    try std.testing.expectEqual(@as(usize, 0), transport.sent_message_count);
+    try std.testing.expectEqual(@as(usize, 0), machine.applied.items.len);
+
+    failing_storage.fail_sync = false;
+    try std.testing.expect(try r.flushReady());
+    try std.testing.expect(transport.sent_message_count > 0);
+    try std.testing.expectEqual(@as(usize, 1), machine.applied.items.len);
+}
+
+test "raftor: Async Ready sync failure preserves the staged barrier" {
+    var storage = raft.MemoryStorage.init();
+    defer storage.deinit(allocator);
+    var failing_storage = SyncFailingStorage{ .inner = storage.asWritableStorage() };
+    var transport = raft.NoopTransport.init(allocator);
+    defer transport.deinit();
+    var machine = MockStateMachine.init(allocator);
+    defer machine.deinit();
+    var config = makeConfig(1);
+    config.async_ready = true;
+
+    const r = try Raftor.createWithDependencies(allocator, config, .bootstrap, .{
+        .storage = failing_storage.writableStorage(),
+        .transport = transport.transport(),
+        .state_machine = machine.stateMachine(),
+    });
+    defer r.destroy();
+
+    try r.getRawNode().campaign();
+    try stageAsyncReadies(r);
+    failing_storage.fail_sync = true;
+    try std.testing.expectError(error.WalSyncFailed, r.flushReady());
+    try std.testing.expectEqual(raft.ReadyPhase.awaiting_flush, r.getReadyPhase().?);
+    try std.testing.expectEqual(@as(u64, 0), r.getRawNode().raftConst().raft_log.persisted);
+    try std.testing.expectEqual(@as(usize, 0), machine.applied.items.len);
+
+    failing_storage.fail_sync = false;
+    try std.testing.expect(try r.flushReady());
+    try std.testing.expectEqual(@as(?raft.ReadyPhase, null), r.getReadyPhase());
+    try std.testing.expectEqual(@as(u64, 1), r.getRawNode().raftConst().raft_log.persisted);
+    try std.testing.expectEqual(@as(usize, 1), machine.applied.items.len);
 }
 
 test "raftor: Ready persistence resumes at the failed phase" {

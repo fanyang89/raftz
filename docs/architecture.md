@@ -56,8 +56,25 @@ justifies them is durable.
 
 `Ready.must_sync` indicates that the storage backend must establish its durable
 boundary. `Ready.is_persisted_msg` distinguishes messages that become sendable
-only after persistence; `Ready.messages()` hides those messages from an early
-send phase.
+only after persistence; `Ready.messages()` and `Ready.persistedMessages()` split
+the two send phases without duplicating a message.
+
+### Async Ready Group Commit
+
+`RaftorConfig.async_ready` enables an opt-in, raft-rs-style group-commit path.
+It does not create storage or apply threads. The event-loop thread writes each
+Ready's snapshot, entries, and HardState into the same readable storage, calls
+`advanceAppendAsync`, and may stage more Ready batches. A durability barrier
+performs one `sync` for the group and then acknowledges the highest Ready number
+with `onPersistReady`.
+
+Leader messages may be sent after their Ready is staged so replication overlaps
+the group-commit window. Follower and candidate messages remain queued until the
+barrier succeeds. Snapshot restore, committed-entry apply, ReadState completion,
+and `advanceApplyTo` also remain after the barrier. Incoming snapshots,
+committed configuration changes, and `async_ready_max_inflight` are forced
+barriers. `tick`, `poll`, `campaign`, and `flushReady` return only after their
+staged group is flushed; storage access remains single-threaded.
 
 ## Raftor Tick
 

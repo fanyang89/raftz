@@ -1,8 +1,9 @@
 //! Ready processing pipeline: drives RawNode → Ready → persist → apply → advance.
 //!
-//! Ports `lib/raftor/ready_processor.{h,cc}`. Each `process()` call pulls one
-//! Ready from the RawNode, runs it through a persistence/apply pipeline, and returns
-//! whether there was work to do:
+//! The default path processes one Ready synchronously. The opt-in Async Ready
+//! path stages storage-visible Ready writes with `advanceAppendAsync`, groups
+//! their durability barrier, and acknowledges the group with `onPersistReady`.
+//! Both paths preserve the same persistence/apply ordering:
 //!
 //!   1. Validate entries (optional CRC32C checksum)
 //!   2. Persist an incoming snapshot as the new storage baseline
@@ -63,6 +64,8 @@ pub const ReadyPhase = enum {
     send_advanced_messages,
     apply_advanced_committed,
     advance_apply,
+    advance_append_async,
+    awaiting_flush,
 };
 
 const PendingReady = struct {
@@ -94,6 +97,10 @@ pub const ReadyProcessor = struct {
     fatal_error: ?Error,
     fatal_after_ready: ?Error,
     pending: ?PendingReady,
+    async_staged: std.ArrayList(PendingReady),
+    async_ready: bool,
+    async_ready_max_inflight: usize,
+    async_flush_required: bool,
     checksum_enabled: bool,
     durable_state_machine: bool,
     allocator: std.mem.Allocator,
@@ -110,6 +117,8 @@ pub const ReadyProcessor = struct {
         initial_applied_index: u64,
         initial_membership: ?ClusterMembership,
         initial_membership_index: u64,
+        async_ready: bool,
+        async_ready_max_inflight: usize,
     ) ReadyProcessor {
         const ss = raw_node.raftConst().softState();
         return .{
@@ -128,6 +137,10 @@ pub const ReadyProcessor = struct {
             .fatal_error = null,
             .fatal_after_ready = null,
             .pending = null,
+            .async_staged = .empty,
+            .async_ready = async_ready,
+            .async_ready_max_inflight = async_ready_max_inflight,
+            .async_flush_required = false,
             .checksum_enabled = checksum_enabled,
             .durable_state_machine = state_machine.supportsDurableApplied(),
             .allocator = allocator,
@@ -137,6 +150,8 @@ pub const ReadyProcessor = struct {
     pub fn deinit(self: *ReadyProcessor) void {
         if (self.pending) |*pending| pending.deinit(self.allocator);
         self.pending = null;
+        for (self.async_staged.items) |*pending| pending.deinit(self.allocator);
+        self.async_staged.deinit(self.allocator);
         if (self.cluster_membership) |*membership| membership.deinit(self.allocator);
         self.cluster_membership = null;
     }
@@ -167,23 +182,68 @@ pub const ReadyProcessor = struct {
     }
 
     pub fn phase(self: ReadyProcessor) ?ReadyPhase {
-        return if (self.pending) |pending| pending.phase else null;
+        if (self.pending) |pending| return pending.phase;
+        if (self.async_staged.items.len != 0) return .awaiting_flush;
+        return null;
+    }
+
+    pub fn hasStagedReady(self: ReadyProcessor) bool {
+        return self.async_staged.items.len != 0;
+    }
+
+    pub fn canAcceptInput(self: ReadyProcessor) bool {
+        return self.pending == null and !self.async_flush_required;
     }
 
     pub fn terminalError(self: ReadyProcessor) ?Error {
         return self.fatal_error;
     }
 
-    /// Process one Ready cycle. Returns true if there was work to do.
+    /// Process Ready work without forcing an async group-commit barrier.
     pub fn process(self: *ReadyProcessor) Error!bool {
         if (self.fatal_error) |e| return e;
-        if (!try self.processStep()) return false;
-        while (self.pending != null) _ = try self.processStep();
+        if (self.async_ready) return self.stageAsyncReadies();
+        if (!try self.processStepSync()) return false;
+        while (self.pending != null) _ = try self.processStepSync();
         return true;
+    }
+
+    /// Flush every staged async Ready and process work unlocked by persistence.
+    pub fn flush(self: *ReadyProcessor) Error!bool {
+        if (self.fatal_error) |e| return e;
+        if (!self.async_ready) return false;
+
+        var had_work = false;
+        while (true) {
+            if (try self.stageAsyncReadies()) had_work = true;
+            if (self.async_staged.items.len == 0) return had_work;
+            try self.flushAsyncReadies();
+            had_work = true;
+        }
     }
 
     /// Advance one phase of the current Ready cycle.
     pub fn processStep(self: *ReadyProcessor) Error!bool {
+        if (!self.async_ready) return self.processStepSync();
+        if (self.fatal_error) |e| return e;
+        if (self.pending != null) return self.processStepAsync();
+        if (self.async_flush_required) {
+            try self.flushAsyncReadies();
+            return true;
+        }
+        if (self.raw_node.*.hasReady()) {
+            self.pending = .{ .ready = try self.raw_node.*.getReady() };
+            self.checkLeadershipChange(self.pending.?.ready);
+            return true;
+        }
+        if (self.async_staged.items.len != 0) {
+            try self.flushAsyncReadies();
+            return true;
+        }
+        return false;
+    }
+
+    fn processStepSync(self: *ReadyProcessor) Error!bool {
         if (self.fatal_error) |e| return e;
         if (self.pending == null) {
             if (!self.raw_node.*.hasReady()) return false;
@@ -219,7 +279,7 @@ pub const ReadyProcessor = struct {
                 pending.phase = .sync;
             },
             .sync => {
-                const has_snapshot = if (pending.ready.snapshot) |snapshot| snapshot.metadata.index > 0 else false;
+                const has_snapshot = readyHasSnapshot(pending.ready);
                 const durable_commit = self.durable_state_machine and pending.ready.hs != null;
                 if (pending.ready.must_sync or has_snapshot or durable_commit) try self.storage.sync();
                 if (pending.snapshot_membership) |membership| {
@@ -245,10 +305,7 @@ pub const ReadyProcessor = struct {
                 pending.phase = .complete_reads;
             },
             .complete_reads => {
-                for (pending.ready.read_states) |read_state| {
-                    self.proposal_tracker.markReadReady(read_state.request_ctx, read_state.index);
-                }
-                self.proposal_tracker.completeReadyReads(self.applied_index);
+                self.completeReads(pending.ready.read_states);
                 pending.phase = .advance;
             },
             .advance => {
@@ -285,13 +342,149 @@ pub const ReadyProcessor = struct {
                 self.fatal_error = self.fatal_after_ready;
                 self.fatal_after_ready = null;
             },
+            .advance_append_async, .awaiting_flush => unreachable,
         }
         return true;
+    }
+
+    fn processStepAsync(self: *ReadyProcessor) Error!bool {
+        const pending = &self.pending.?;
+        switch (pending.phase) {
+            .validate => {
+                if (self.checksum_enabled) try self.validateEntries(pending.ready.entries);
+                pending.phase = .persist_snapshot;
+            },
+            .persist_snapshot => {
+                if (pending.ready.snapshot) |snapshot| {
+                    if (snapshot.metadata.index > 0) {
+                        pending.snapshot_membership = try self.persistSnapshot(snapshot);
+                    }
+                }
+                pending.phase = .persist_entries;
+            },
+            .persist_entries => {
+                if (pending.ready.entries.len > 0) {
+                    try self.storage.append(self.allocator, pending.ready.entries);
+                }
+                pending.phase = .persist_hard_state;
+            },
+            .persist_hard_state => {
+                if (pending.ready.hs) |hs| try self.storage.setHardState(hs);
+                pending.phase = .advance_append_async;
+            },
+            .advance_append_async => {
+                try self.async_staged.ensureUnusedCapacity(self.allocator, 1);
+                const force_flush = readyHasSnapshot(pending.ready) or
+                    readyHasCommittedConfChange(pending.ready) or
+                    self.async_staged.items.len + 1 >= self.async_ready_max_inflight;
+                self.raw_node.*.advanceAppendAsync(pending.ready) catch |err| {
+                    self.fatal_error = err;
+                    return err;
+                };
+
+                var staged = pending.*;
+                self.pending = null;
+                self.async_staged.appendAssumeCapacity(staged);
+                staged = undefined;
+                const ready = self.async_staged.items[self.async_staged.items.len - 1].ready;
+                self.sendMessages(ready.messages());
+                self.async_flush_required = self.async_flush_required or force_flush;
+            },
+            else => unreachable,
+        }
+        return true;
+    }
+
+    fn stageAsyncReadies(self: *ReadyProcessor) Error!bool {
+        var had_work = false;
+        if (self.async_flush_required) {
+            try self.flushAsyncReadies();
+            had_work = true;
+        }
+
+        while (self.pending != null or self.raw_node.*.hasReady()) {
+            if (self.pending == null) {
+                self.pending = .{ .ready = try self.raw_node.*.getReady() };
+                self.checkLeadershipChange(self.pending.?.ready);
+                had_work = true;
+            }
+            while (self.pending != null) _ = try self.processStepAsync();
+            if (self.async_flush_required) {
+                try self.flushAsyncReadies();
+                had_work = true;
+            }
+        }
+        return had_work;
+    }
+
+    fn flushAsyncReadies(self: *ReadyProcessor) Error!void {
+        if (self.async_staged.items.len == 0) {
+            self.async_flush_required = false;
+            return;
+        }
+
+        var must_sync = false;
+        for (self.async_staged.items) |pending| {
+            must_sync = must_sync or pending.ready.must_sync or readyHasSnapshot(pending.ready) or
+                (self.durable_state_machine and pending.ready.hs != null);
+        }
+        if (must_sync) self.storage.sync() catch |err| {
+            self.async_flush_required = true;
+            return err;
+        };
+
+        const highest_number = self.async_staged.items[self.async_staged.items.len - 1].ready.number;
+        self.raw_node.*.onPersistReady(highest_number);
+        self.async_flush_required = false;
+
+        while (self.async_staged.items.len != 0) {
+            const pending = &self.async_staged.items[0];
+            if (pending.snapshot_membership) |membership| {
+                pending.snapshot_membership = null;
+                self.installMembership(membership, pending.ready.snapshot.?.metadata.index);
+            }
+            if (pending.ready.snapshot) |snapshot| {
+                if (snapshot.metadata.index > 0) try self.restoreSnapshot(snapshot);
+            }
+            self.sendMessages(pending.ready.persistedMessages());
+            if (pending.ready.light.committed_entries.len > 0) {
+                try self.applyCommittedEntries(pending.ready.light.committed_entries);
+            }
+            self.completeReads(pending.ready.read_states);
+            self.raw_node.*.advanceApplyTo(self.applied_index);
+
+            pending.deinit(self.allocator);
+            _ = self.async_staged.orderedRemove(0);
+            if (self.fatal_after_ready) |err| {
+                self.fatal_after_ready = null;
+                self.fatal_error = err;
+                return err;
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
+
+    fn readyHasSnapshot(ready: Ready) bool {
+        return if (ready.snapshot) |snapshot| snapshot.metadata.index > 0 else false;
+    }
+
+    fn readyHasCommittedConfChange(ready: Ready) bool {
+        for (ready.light.committed_entries) |entry| switch (entry.entry_type) {
+            .conf_change, .conf_change_v2 => return true,
+            .normal => {},
+        };
+        return false;
+    }
+
+    fn completeReads(self: *ReadyProcessor, read_states: []const ReadState) void {
+        for (read_states) |read_state| {
+            self.proposal_tracker.markReadReady(read_state.request_ctx, read_state.index);
+        }
+        self.proposal_tracker.completeReadyReads(self.applied_index);
+    }
 
     fn sendMessages(self: *ReadyProcessor, messages: []const Message) void {
         for (messages) |*message| {

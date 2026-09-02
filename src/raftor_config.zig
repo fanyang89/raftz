@@ -77,6 +77,11 @@ pub const RaftorConfig = struct {
     snapshot_retry_min_ticks: u64 = 10,
     /// Whether to verify CRC32C entry checksums on apply.
     checksum_enabled: bool = false,
+    /// Stage Ready writes in the event loop and group their durability sync.
+    /// This does not create background storage or apply threads.
+    async_ready: bool = false,
+    /// Maximum staged Ready batches before forcing a durability barrier.
+    async_ready_max_inflight: usize = 16,
     /// Proposal timeout after leaving the ingress queue, in ticks.
     /// Time spent queued is excluded. 0 = no timeout.
     proposal_timeout_ticks: u64 = 0,
@@ -101,6 +106,8 @@ test "raftor config defaults" {
     try std.testing.expectEqual(@as(usize, 256), c.max_queued_read_indexes);
     try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), c.max_queued_read_index_bytes);
     try std.testing.expectEqual(@as(u64, 10_000), c.snapshot_entries_threshold);
+    try std.testing.expect(!c.async_ready);
+    try std.testing.expectEqual(@as(usize, 16), c.async_ready_max_inflight);
     try std.testing.expectEqual(@as(usize, 0), c.initial_peers.len);
     try std.testing.expectEqual(@as(?fs_mod.Fs, null), c.file_system);
     try std.testing.expectEqual(@as(?ClusterId, null), c.cluster_id);
