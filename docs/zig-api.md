@@ -8,9 +8,24 @@ types that may evolve before 1.0.
 
 | Level | Primary types | Application responsibility |
 | --- | --- | --- |
-| Orchestrated | `Raftor`, `RaftorConfig`, `StateMachine`, `Transport` | Configure the node, implement replicated state, and drive `tick` or `run`. |
+| Multi-Raft | `MultiRaftHost`, `MultiTransport`, `RaftEnvelope` | Host multiple groups, provide one StateMachine per group, and drive the shared event loop. |
+| Orchestrated | `Raftor`, `RaftorConfig`, `StateMachine`, `Transport` | Configure one group, implement replicated state, and drive `tick` or `run`. |
 | Ready/Advance | `RawNode`, `Ready`, `LightReady`, `Storage` | Persist state, order messages, apply entries, restore snapshots, and advance cursors. |
 | Consensus core | `Raft`, `RaftLog`, quorum and progress types | Build a specialized integration and preserve every Raft safety contract. |
+
+## MultiRaftHost
+
+`MultiRaftHost` reuses one `Raftor` per group behind a group-aware Transport
+adapter. Groups are added with `MultiRaftGroupConfig`, have independent
+StateMachines and WAL directories, and are driven in stable round-robin order.
+The node-level `MultiTransport` carries `RaftEnvelope` values containing a
+nonzero group ID and a normal Raft `Message`.
+
+A host with a non-empty `data_dir` owns each group's WAL under
+`<data_dir>/groups/<group_id>`. Group management is allowed while the host event
+loop is stopped. `propose` and `readIndex` route directly to the selected group;
+unknown IDs return `GroupNotFound`. See [Multi-Raft](multi-raft.md) for lifecycle,
+scheduling, ownership, and transport details.
 
 ## Raftor
 

@@ -77,6 +77,8 @@ raftz is organized in layered modules under `src/`:
 - `read_only` — linearizable read-index queue.
 - `raftor` — high-level orchestration loop, ready processor, proposal
   tracker, `StateMachine` interface.
+- `multi_raft` — cooperative multi-group host with per-group Raftor/WAL and
+  shared group-aware transport envelopes.
 - `wal` — segmented WAL with CRC32C.
 - `rpc` — pluggable transport (with a grpc-lite backend as the default).
 
@@ -105,7 +107,7 @@ implementing a feature outside the current decision.
 | Cap'n Proto wire format            | Out of scope  | Zig structs + grpc-lite framing                                             |
 | Seastar integration                | Out of scope  | Not applicable in Zig                                                       |
 | io_uring WAL backend               | Selected      | Planned Linux-only backend; not implemented                                 |
-| Multi-tenant raft groups           | Out of scope  | One node, one group for now                                                 |
+| Multi-tenant raft groups           | Selected      | MultiRaftHost MVP: cooperative scheduling, per-group WAL, shared envelopes  |
 
 ## MCP usage
 

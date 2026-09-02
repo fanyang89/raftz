@@ -13,9 +13,9 @@
 //!   * `storage` / `memory_storage` — `Storage` / `WritableStorage` vtables
 //!     and the default in-memory backend.
 //!   * `read_only` — linearizable read-index queue.
-//!   * `log`, `progress`, `raft`, `raw_node`, `raftor`, `wal`, `rpc` — the
-//!     consensus log, replication tracking, state machine, user-facing API,
-//!     orchestration loop, write-ahead log, and pluggable transport.
+//!   * `log`, `progress`, `raft`, `raw_node`, `raftor`, `multi_raft`, `wal`,
+//!     `rpc` — the consensus log, replication tracking, user-facing APIs,
+//!     orchestration layers, write-ahead log, and pluggable transports.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -50,6 +50,7 @@ const invariant_mod = @import("invariant.zig");
 const raw_node_mod = @import("raw_node.zig");
 const state_machine_mod = @import("state_machine.zig");
 const transport_mod = @import("transport.zig");
+const multi_transport_mod = @import("multi_transport.zig");
 const proposal_tracker_mod = @import("proposal_tracker.zig");
 const raftor_config_mod = @import("raftor_config.zig");
 const ready_processor_mod = @import("ready_processor.zig");
@@ -59,6 +60,8 @@ const fs_testing_mod = @import("fs/testing.zig");
 const wal_mod = @import("wal.zig");
 const codec_mod = @import("codec.zig");
 const loopback_transport_mod = @import("loopback_transport.zig");
+const loopback_multi_transport_mod = @import("loopback_multi_transport.zig");
+const multi_raft_mod = @import("multi_raft.zig");
 const proposal_queue_mod = @import("proposal_queue.zig");
 const request_context_mod = @import("request_context.zig");
 const cluster_membership_mod = @import("cluster_membership.zig");
@@ -212,6 +215,12 @@ pub const PeerEvent = transport_mod.PeerEvent;
 pub const PeerEventCallback = transport_mod.PeerEventCallback;
 pub const Transport = transport_mod.Transport;
 pub const NoopTransport = transport_mod.NoopTransport;
+pub const GroupId = multi_transport_mod.GroupId;
+pub const RaftEnvelope = multi_transport_mod.Envelope;
+pub const MultiPeerEvent = multi_transport_mod.PeerEvent;
+pub const EnvelopeCallback = multi_transport_mod.EnvelopeCallback;
+pub const MultiPeerEventCallback = multi_transport_mod.PeerEventCallback;
+pub const MultiTransport = multi_transport_mod.MultiTransport;
 
 pub const ProposalResult = proposal_tracker_mod.ProposalResult;
 pub const ReadIndexResult = proposal_tracker_mod.ReadIndexResult;
@@ -257,10 +266,21 @@ pub const encodeMessage = codec_mod.encodeMessage;
 pub const decodeMessage = codec_mod.decodeMessage;
 pub const encodeFramed = codec_mod.encodeFramed;
 pub const decodeFramed = codec_mod.decodeFramed;
+pub const encodeEnvelope = codec_mod.encodeEnvelope;
+pub const decodeEnvelope = codec_mod.decodeEnvelope;
 
 pub const LoopbackNetwork = loopback_transport_mod.LoopbackNetwork;
 pub const LoopbackTransport = loopback_transport_mod.LoopbackTransport;
+pub const LoopbackMultiNetwork = loopback_multi_transport_mod.LoopbackMultiNetwork;
+pub const LoopbackMultiTransport = loopback_multi_transport_mod.LoopbackMultiTransport;
 pub const TransportIdentity = transport_mod.TransportIdentity;
+
+pub const MultiRaftConfig = multi_raft_mod.MultiRaftConfig;
+pub const MultiRaftGroupConfig = multi_raft_mod.MultiRaftGroupConfig;
+pub const MultiRaftGroupLifecycle = multi_raft_mod.GroupLifecycle;
+pub const MultiRaftGroupStatus = multi_raft_mod.MultiRaftGroupStatus;
+pub const MultiRaftHost = multi_raft_mod.MultiRaftHost;
+pub const MultiRaft = multi_raft_mod.MultiRaftHost;
 
 pub const ProposalQueue = proposal_queue_mod.ProposalQueue;
 pub const ReadIndexQueue = proposal_queue_mod.ReadIndexQueue;
@@ -311,6 +331,7 @@ test "re-exported modules compile" {
     _ = raw_node_mod;
     _ = state_machine_mod;
     _ = transport_mod;
+    _ = multi_transport_mod;
     _ = proposal_tracker_mod;
     _ = raftor_config_mod;
     _ = ready_processor_mod;
@@ -318,6 +339,8 @@ test "re-exported modules compile" {
     _ = wal_mod;
     _ = codec_mod;
     _ = loopback_transport_mod;
+    _ = loopback_multi_transport_mod;
+    _ = multi_raft_mod;
     _ = proposal_queue_mod;
     _ = request_context_mod;
     _ = cluster_membership_mod;

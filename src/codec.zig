@@ -9,8 +9,10 @@ const std = @import("std");
 
 const types = @import("core/types.zig");
 const storage_mod = @import("storage.zig");
+const multi_transport_mod = @import("multi_transport.zig");
 
 const Message = types.Message;
+const Envelope = multi_transport_mod.Envelope;
 const MessageType = types.MessageType;
 const Entry = types.Entry;
 const EntryType = types.EntryType;
@@ -21,6 +23,9 @@ const cloneConfState = storage_mod.cloneConfState;
 
 const codec_magic: u32 = 0x52415046; // "RAPF"
 const codec_version: u32 = 1;
+const envelope_magic: u32 = 0x52414d45; // "RAME"
+const envelope_version: u32 = 1;
+const envelope_header_size: usize = 4 + 4 + 8 + 4;
 const header_size: usize = 4 + 4 + 8 + 8 + 8 + 1 + 4; // magic+ver+from+to+req+type+payload_len = 37
 const encoded_entry_min_size: usize = 1 + 8 + 8 + 4 + 4 + 4;
 
@@ -116,6 +121,22 @@ pub fn encodeFramed(
     return frame.toOwnedSlice(allocator);
 }
 
+/// Encode a group-aware envelope without changing the Message codec.
+pub fn encodeEnvelope(allocator: std.mem.Allocator, envelope: Envelope) ![]u8 {
+    if (envelope.group_id == 0) return error.InvalidGroupId;
+    const payload = try encodeMessage(allocator, envelope.message);
+    defer allocator.free(payload);
+
+    var frame: std.ArrayList(u8) = .empty;
+    errdefer frame.deinit(allocator);
+    try writeU32(allocator, &frame, envelope_magic);
+    try writeU32(allocator, &frame, envelope_version);
+    try writeU64(allocator, &frame, envelope.group_id);
+    try writeU32(allocator, &frame, try encodedLength(payload.len));
+    try frame.appendSlice(allocator, payload);
+    return frame.toOwnedSlice(allocator);
+}
+
 // ===========================================================================
 // Decoder
 // ===========================================================================
@@ -142,6 +163,23 @@ pub fn decodeMessage(allocator: std.mem.Allocator, data: []const u8) !Message {
         return error.TrailingData;
     }
     return message;
+}
+
+/// Decode an owned group-aware envelope.
+pub fn decodeEnvelope(allocator: std.mem.Allocator, data: []const u8) !Envelope {
+    if (data.len < envelope_header_size) return error.TruncatedMessage;
+    var decoder = Decoder{ .data = data };
+    if (try decoder.readInt(u32) != envelope_magic) return error.InvalidMagic;
+    if (try decoder.readInt(u32) != envelope_version) return error.InvalidVersion;
+    const group_id = try decoder.readInt(u64);
+    if (group_id == 0) return error.InvalidGroupId;
+    const payload_len = try decoder.readInt(u32);
+    const payload_end = std.math.add(usize, decoder.pos, payload_len) catch return error.TruncatedMessage;
+    if (payload_end != data.len) return if (payload_end < data.len) error.TrailingData else error.TruncatedMessage;
+    return .{
+        .group_id = group_id,
+        .message = try decodeMessage(allocator, data[decoder.pos..payload_end]),
+    };
 }
 
 fn decodeMessageAt(allocator: std.mem.Allocator, data: []const u8, pos: *usize) !Message {

@@ -10,6 +10,9 @@ complete orchestration layer.
 Application
   StateMachine, proposals, linearizable reads, membership operations
                               |
+                 MultiRaftHost (optional)
+          group registry and shared transport routing
+                              |
                            Raftor
   lifecycle, ingress queues, ReadyProcessor, status, snapshots
                               |
@@ -31,7 +34,8 @@ Application
 | `progress*.zig`, quorum modules | Per-peer replication state and quorum calculations. |
 | `raw_node.zig` | User-facing Ready/Advance boundary. |
 | `ready_processor.zig` | Correct persistence, transport, apply, and advance ordering. |
-| `raftor.zig` | Server lifecycle, request queues, snapshots, membership, and status. |
+| `raftor.zig` | One-group lifecycle, request queues, snapshots, membership, and status. |
+| `multi_raft.zig`, `multi_transport.zig` | Cooperative group registry, scheduling, and shared envelope routing. |
 | `storage.zig`, `memory_storage.zig`, `wal.zig` | Pluggable storage and built-in backends. |
 | `transport.zig`, `loopback_transport.zig`, `rpc/` | Pluggable message transport and peer lifecycle. |
 
@@ -90,6 +94,19 @@ One `Raftor.tick` iteration serializes node mutation and performs bounded work:
 Budgets prevent one input source from monopolizing the event loop. Request data
 is copied before entering the queues, so producer threads do not need to retain
 their input buffers.
+
+## Multi-Raft Host
+
+`MultiRaftHost` owns stable heap allocations for multiple `Raftor` instances and
+drives them in sorted, round-robin order. Each group keeps its own Ready
+pipeline, StateMachine, membership, snapshot, and WAL directory. A virtual
+single-group Transport adapter adds or removes the group ID at the shared
+`MultiTransport` boundary, so a group shutdown cannot stop another group's
+physical connection.
+
+Host transport polling and group driving have independent budgets. Terminal
+errors are recorded per group and do not stop healthy groups. See
+[Multi-Raft](multi-raft.md) for the public API and MVP limits.
 
 ## Storage Boundary
 

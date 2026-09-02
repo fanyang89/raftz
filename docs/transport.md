@@ -33,6 +33,25 @@ clone or share retained data before `send` returns.
 
 Applications may provide another implementation through `Transport.VTable`.
 
+## Shared Multi-Raft Transport
+
+`MultiTransport` is a node-level interface for multiple groups. It carries
+`RaftEnvelope` values and makes peer registration group-aware:
+
+| Method | Responsibility |
+| --- | --- |
+| `addPeer`, `removePeer` | Add or release one group's reference to a physical peer. |
+| `send` | Send borrowed `{ group_id, Message }` envelopes. |
+| `setEnvelopeCallback` | Deliver owned inbound envelopes through `pollOne`. |
+| `setPeerEventCallback` | Deliver group-qualified peer failures. |
+
+`MultiRaftHost` creates one virtual `Transport` adapter per group, while only the
+shared transport owns physical lifecycle. `LoopbackMultiNetwork` is the built-in
+process-local implementation. `encodeEnvelope` and `decodeEnvelope` provide the
+outer wire format for custom network implementations. The current
+`GrpcLiteTransport` remains single-group and cannot be used as a
+`MultiTransport`.
+
 ## grpc-lite Setup
 
 `GrpcLiteTransport.create` requires a thread-safe allocator because server

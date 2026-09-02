@@ -19,7 +19,7 @@ before 1.0.
 | Consensus | Integration | Durability and transport |
 | --- | --- | --- |
 | Pre-vote and check-quorum options | Low-level `RawNode` Ready/Advance API | In-memory and segmented WAL storage |
-| Joint-consensus membership changes | High-level `Raftor` event loop and opt-in Async Ready group commit | CRC32C records and entry verification |
+| Joint-consensus membership changes | `Raftor` plus cooperative `MultiRaftHost` scheduling | CRC32C records and entry verification |
 | Safe and lease-based ReadIndex | Callback-based proposals and reads | Snapshots, compaction, and restart recovery |
 | Leadership transfer and learners | Pluggable state machine and storage | Loopback and grpc-lite transports |
 
@@ -82,7 +82,8 @@ initialization, state-machine requirements, and a complete node lifecycle.
 
 | API | Use it when |
 | --- | --- |
-| `Raftor` | You want built-in Ready processing, proposal queues, snapshots, storage selection, and transport orchestration. |
+| `MultiRaftHost` | You want multiple isolated Raft groups, per-group WALs, and one shared envelope transport per node. |
+| `Raftor` | You want built-in Ready processing, proposal queues, snapshots, storage selection, and transport orchestration for one group. |
 | `RawNode` | You need to own the persistence, message dispatch, apply, and event-loop pipeline. |
 
 `Raftor.create` uses `MemoryStorage` when `data_dir` is empty and `WALStorage`
@@ -90,7 +91,10 @@ when it is set. Applications always provide the replicated `StateMachine`.
 Multi-node deployments additionally provide a `Transport`.
 
 ```text
-Application state machine and requests
+Application state machines and requests
+                 |
+       MultiRaftHost (optional)
+        group registry, routing
                  |
               Raftor
        queues, Ready processing
@@ -111,7 +115,8 @@ for the processing order and ownership contracts.
 | Linux x86_64 and arm64 | Continuously tested in Debug and ReleaseSafe |
 | Core Raft, ReadIndex, learners, joint consensus | Supported |
 | MemoryStorage, WAL, snapshots, restart | Supported |
-| Single Raft group per `Raftor` | Supported scope |
+| Multi-Raft cooperative host and shared envelope transport | Supported MVP |
+| Multiplexed grpc-lite MultiTransport backend | Not implemented |
 | grpc-lite authentication and TLS | Not provided by raftz |
 | Multi-tenant group hosting, disaster-recovery import | Out of scope or not implemented |
 
@@ -131,6 +136,7 @@ Lower-level modules remain available for experimentation and may evolve before 1
 - [Durability](docs/durability.md): storage, WAL, checksums, snapshots, and recovery
 - [Membership](docs/membership.md): bootstrap, join, restart, and migration
 - [Transport](docs/transport.md): transport contract and grpc-lite integration
+- [Multi-Raft](docs/multi-raft.md): group hosting, scheduling, WAL layout, and shared envelopes
 - [Testing](docs/testing.md): suites, fuzzing, fault injection, and upstream inventory
 - [Development](docs/development.md): tasks, build options, profiling, and coverage
 

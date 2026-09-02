@@ -62,6 +62,12 @@ pub const Error = error{
     ContextSequenceExhausted,
     EventLoopBusy,
 
+    // Multi-Raft host errors.
+    InvalidGroupId,
+    GroupAlreadyExists,
+    GroupNotFound,
+    GroupLimitReached,
+
     // RaftLog errors.
     ZeroEntriesInSlice,
 
@@ -187,6 +193,10 @@ pub fn name(e: Error) []const u8 {
         error.IncarnationExhausted => "IncarnationExhausted",
         error.ContextSequenceExhausted => "ContextSequenceExhausted",
         error.EventLoopBusy => "EventLoopBusy",
+        error.InvalidGroupId => "InvalidGroupId",
+        error.GroupAlreadyExists => "GroupAlreadyExists",
+        error.GroupNotFound => "GroupNotFound",
+        error.GroupLimitReached => "GroupLimitReached",
         error.ZeroEntriesInSlice => "ZeroEntriesInSlice",
         error.StepLocalMsg => "StepLocalMsg",
         error.StepPeerNotFound => "StepPeerNotFound",

@@ -186,6 +186,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "raft", .source = "tests/raft_test.zig" },
         .{ .name = "raw_node", .source = "tests/raw_node_test.zig" },
         .{ .name = "raftor", .source = "tests/raftor_test.zig" },
+        .{ .name = "multi-raft", .source = "tests/multi_raft_test.zig" },
         .{ .name = "multi_node", .source = "tests/multi_node_test.zig" },
         .{ .name = "raftor_multi_node", .source = "tests/raftor_multi_node_test.zig" },
         .{ .name = "figure8", .source = "tests/figure8_test.zig" },

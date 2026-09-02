@@ -1130,6 +1130,10 @@ pub const Raftor = struct {
         return self.ready_processor.phase();
     }
 
+    pub fn getTerminalError(self: *const Raftor) ?Error {
+        return self.ready_processor.terminalError();
+    }
+
     pub fn processReadyStep(self: *Raftor) Error!bool {
         try self.enterEventLoop();
         defer self.leaveEventLoop();
