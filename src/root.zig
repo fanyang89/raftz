@@ -280,6 +280,7 @@ pub const MultiRaftConfig = multi_raft_mod.MultiRaftConfig;
 pub const MultiRaftGroupConfig = multi_raft_mod.MultiRaftGroupConfig;
 pub const MultiRaftGroupLifecycle = multi_raft_mod.GroupLifecycle;
 pub const MultiRaftGroupStatus = multi_raft_mod.MultiRaftGroupStatus;
+pub const MultiRaftHostStatus = multi_raft_mod.MultiRaftHostStatus;
 pub const GroupOperationKind = multi_raft_mod.GroupOperationKind;
 pub const GroupOperationResult = multi_raft_mod.GroupOperationResult;
 pub const GroupOperationCallback = multi_raft_mod.GroupOperationCallback;

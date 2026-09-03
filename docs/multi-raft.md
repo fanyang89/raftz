@@ -94,6 +94,23 @@ logical clock less frequently; size the budget and host tick interval together.
 Terminal group errors are isolated and stop only that group. Retryable errors
 are reported by `tick` or `poll` and retained in `MultiRaftGroupStatus`.
 
+## Observability
+
+`getHostStatus` returns a lock-safe `MultiRaftHostStatus` snapshot containing:
+
+- group counts by lifecycle state
+- queued management operation count and retained bytes
+- tick, poll, and total host iterations
+- groups driven, productive group iterations, and group errors
+- completed and failed management operations
+- routed envelopes, peer events, and unknown-group messages
+
+`getStatus(group_id)` adds per-group scheduler counters and pending message/event
+counts to the underlying `NodeStatus`. `listGroupStatuses` allocates a sorted
+snapshot for the full registry; the caller owns the returned slice. Metrics are
+monotonic process-lifetime counters and snapshots may span adjacent event-loop
+operations rather than one global transaction.
+
 ## Shared Transport
 
 `MultiTransport` is parallel to the existing single-group `Transport`. Its

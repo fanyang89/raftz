@@ -94,6 +94,33 @@ pub const MultiRaftGroupStatus = struct {
     lifecycle: GroupLifecycle,
     node: raftor_mod.NodeStatus,
     last_error: ?Error,
+    pending_messages: usize,
+    pending_peer_events: usize,
+    scheduled_iterations: u64,
+    productive_iterations: u64,
+    error_iterations: u64,
+    last_host_iteration: u64,
+};
+
+pub const MultiRaftHostStatus = struct {
+    node_id: u64,
+    groups: usize,
+    active_groups: usize,
+    retryable_groups: usize,
+    terminal_groups: usize,
+    stopping_groups: usize,
+    queued_group_operations: GroupOperationQueueStats,
+    unknown_group_messages: usize,
+    host_iterations: u64,
+    tick_iterations: u64,
+    poll_iterations: u64,
+    groups_driven: u64,
+    groups_with_work: u64,
+    group_error_iterations: u64,
+    group_operations_completed: u64,
+    group_operations_failed: u64,
+    envelopes_routed: u64,
+    peer_events_routed: u64,
 };
 
 pub const GroupOperationKind = enum {
@@ -239,6 +266,8 @@ const GroupTransport = struct {
     peer_events: std.ArrayList(PeerEvent) = .empty,
     peers: std.AutoHashMap(u64, void),
     max_inbox_messages: usize,
+    pending_messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    pending_peer_events: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     started: bool = false,
     stopped: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     allocator: std.mem.Allocator,
@@ -290,6 +319,7 @@ const GroupTransport = struct {
             owned.deinit(self.allocator);
             return err;
         };
+        _ = self.pending_messages.fetchAdd(1, .release);
     }
 
     fn enqueuePeerEvent(self: *GroupTransport, event: PeerEvent) Error!void {
@@ -298,6 +328,7 @@ const GroupTransport = struct {
             return if (stopped) error.ShuttingDown else error.TransportBackpressure;
         }
         try self.peer_events.append(self.allocator, event);
+        _ = self.pending_peer_events.fetchAdd(1, .release);
     }
 
     fn releasePeers(self: *GroupTransport) void {
@@ -359,12 +390,16 @@ const GroupTransport = struct {
         if (self.stopped.load(.acquire)) return false;
         if (self.inbox.items.len != 0) {
             const callback = self.message_callback orelse return false;
-            try callback.invoke(self.inbox.orderedRemove(0));
+            const message = self.inbox.orderedRemove(0);
+            _ = self.pending_messages.fetchSub(1, .release);
+            try callback.invoke(message);
             return true;
         }
         if (self.peer_events.items.len != 0) {
             const callback = self.peer_event_callback orelse return false;
-            try callback.invoke(self.peer_events.orderedRemove(0));
+            const event = self.peer_events.orderedRemove(0);
+            _ = self.pending_peer_events.fetchSub(1, .release);
+            try callback.invoke(event);
             return true;
         }
         return false;
@@ -415,6 +450,10 @@ const Group = struct {
     status_mutex: std.atomic.Mutex = .unlocked,
     lifecycle: GroupLifecycle = .active,
     last_error: ?Error = null,
+    scheduled_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    productive_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    error_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    last_host_iteration: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     allocator: std.mem.Allocator,
 
     fn create(
@@ -510,7 +549,36 @@ const Group = struct {
         defer self.status_mutex.unlock();
         return .{ .lifecycle = self.lifecycle, .last_error = self.last_error };
     }
+
+    fn recordScheduled(self: *Group, host_iteration: u64) void {
+        _ = self.scheduled_iterations.fetchAdd(1, .monotonic);
+        self.last_host_iteration.store(host_iteration, .release);
+    }
+
+    fn recordProductive(self: *Group) void {
+        _ = self.productive_iterations.fetchAdd(1, .monotonic);
+    }
+
+    fn recordError(self: *Group) void {
+        _ = self.error_iterations.fetchAdd(1, .monotonic);
+    }
 };
+
+fn makeGroupStatus(group: *Group) MultiRaftGroupStatus {
+    const status = group.lifecycleSnapshot();
+    return .{
+        .group_id = group.id,
+        .lifecycle = status.lifecycle,
+        .node = group.raftor.getStatus(),
+        .last_error = status.last_error,
+        .pending_messages = group.transport.pending_messages.load(.acquire),
+        .pending_peer_events = group.transport.pending_peer_events.load(.acquire),
+        .scheduled_iterations = group.scheduled_iterations.load(.acquire),
+        .productive_iterations = group.productive_iterations.load(.acquire),
+        .error_iterations = group.error_iterations.load(.acquire),
+        .last_host_iteration = group.last_host_iteration.load(.acquire),
+    };
+}
 
 pub const MultiRaftHost = struct {
     allocator: std.mem.Allocator,
@@ -529,6 +597,16 @@ pub const MultiRaftHost = struct {
     stopped: bool = false,
     round_robin_cursor: usize = 0,
     unknown_group_messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    host_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    tick_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    poll_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    groups_driven: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    groups_with_work: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    group_error_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    group_operations_completed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    group_operations_failed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    envelopes_routed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    peer_events_routed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -775,13 +853,7 @@ pub const MultiRaftHost = struct {
         spinLock(mutex);
         defer mutex.unlock();
         const group = self.groups.get(group_id) orelse return null;
-        const status = group.lifecycleSnapshot();
-        return .{
-            .group_id = group_id,
-            .lifecycle = status.lifecycle,
-            .node = group.raftor.getStatus(),
-            .last_error = status.last_error,
-        };
+        return makeGroupStatus(group);
     }
 
     /// Event-loop escape hatch. Unavailable while `run` or queued management is active.
@@ -800,6 +872,55 @@ pub const MultiRaftHost = struct {
         return self.groups.count();
     }
 
+    pub fn getHostStatus(self: *const MultiRaftHost) MultiRaftHostStatus {
+        var result = MultiRaftHostStatus{
+            .node_id = self.config.node_id,
+            .groups = 0,
+            .active_groups = 0,
+            .retryable_groups = 0,
+            .terminal_groups = 0,
+            .stopping_groups = 0,
+            .queued_group_operations = self.group_operations.stats(),
+            .unknown_group_messages = self.unknown_group_messages.load(.acquire),
+            .host_iterations = self.host_iterations.load(.acquire),
+            .tick_iterations = self.tick_iterations.load(.acquire),
+            .poll_iterations = self.poll_iterations.load(.acquire),
+            .groups_driven = self.groups_driven.load(.acquire),
+            .groups_with_work = self.groups_with_work.load(.acquire),
+            .group_error_iterations = self.group_error_iterations.load(.acquire),
+            .group_operations_completed = self.group_operations_completed.load(.acquire),
+            .group_operations_failed = self.group_operations_failed.load(.acquire),
+            .envelopes_routed = self.envelopes_routed.load(.acquire),
+            .peer_events_routed = self.peer_events_routed.load(.acquire),
+        };
+        const mutex = @constCast(&self.groups_mutex);
+        spinLock(mutex);
+        defer mutex.unlock();
+        result.groups = self.groups.count();
+        var iterator = self.groups.valueIterator();
+        while (iterator.next()) |group| switch (group.*.lifecycleSnapshot().lifecycle) {
+            .active => result.active_groups += 1,
+            .retryable_error => result.retryable_groups += 1,
+            .terminal => result.terminal_groups += 1,
+            .stopping => result.stopping_groups += 1,
+        };
+        return result;
+    }
+
+    pub fn listGroupStatuses(
+        self: *const MultiRaftHost,
+        allocator: std.mem.Allocator,
+    ) Error![]MultiRaftGroupStatus {
+        const mutex = @constCast(&self.groups_mutex);
+        spinLock(mutex);
+        defer mutex.unlock();
+        const statuses = try allocator.alloc(MultiRaftGroupStatus, self.group_ids.items.len);
+        for (self.group_ids.items, statuses) |group_id, *status| {
+            status.* = makeGroupStatus(self.groups.get(group_id).?);
+        }
+        return statuses;
+    }
+
     pub fn queuedGroupOperations(self: *const MultiRaftHost) GroupOperationQueueStats {
         return self.group_operations.stats();
     }
@@ -809,6 +930,12 @@ pub const MultiRaftHost = struct {
     }
 
     fn drive(self: *MultiRaftHost, advance_clock: bool) Error!bool {
+        const host_iteration = self.host_iterations.fetchAdd(1, .monotonic) +% 1;
+        if (advance_clock) {
+            _ = self.tick_iterations.fetchAdd(1, .monotonic);
+        } else {
+            _ = self.poll_iterations.fetchAdd(1, .monotonic);
+        }
         var had_work = self.processGroupOperations();
         if (self.stop_requested.load(.acquire)) return had_work;
         for (0..self.config.transport_poll_budget) |_| {
@@ -823,11 +950,19 @@ pub const MultiRaftHost = struct {
             const group = self.groups.get(self.group_ids.items[index]).?;
             const status = group.lifecycleSnapshot();
             if (status.lifecycle == .terminal or status.lifecycle == .stopping) continue;
+            group.recordScheduled(host_iteration);
+            _ = self.groups_driven.fetchAdd(1, .monotonic);
             const worked = if (advance_clock) group.raftor.tick() else group.raftor.poll();
             if (worked) |value| {
                 had_work = had_work or value;
+                if (value) {
+                    group.recordProductive();
+                    _ = self.groups_with_work.fetchAdd(1, .monotonic);
+                }
                 group.markActive();
             } else |err| {
+                group.recordError();
+                _ = self.group_error_iterations.fetchAdd(1, .monotonic);
                 if (group.raftor.getTerminalError()) |terminal| {
                     group.markTerminal(terminal);
                 } else {
@@ -855,6 +990,8 @@ pub const MultiRaftHost = struct {
                 .remove => |value| if (self.removeGroupInternal(value.group_id)) |_| null else |err| err,
                 .restart => |*value| if (self.restartGroupOwned(&value.config, value.state_machine)) |_| null else |err| err,
             };
+            _ = self.group_operations_completed.fetchAdd(1, .monotonic);
+            if (operation_error != null) _ = self.group_operations_failed.fetchAdd(1, .monotonic);
             item.command.callback().invoke(.{
                 .group_id = group_id,
                 .operation = operation,
@@ -896,9 +1033,9 @@ pub const MultiRaftHost = struct {
         );
         spinLock(&self.groups_mutex);
         self.groups.putAssumeCapacity(group_id, group);
-        self.groups_mutex.unlock();
         self.group_ids.appendAssumeCapacity(group_id);
         std.mem.sort(GroupId, self.group_ids.items, {}, std.sort.asc(GroupId));
+        self.groups_mutex.unlock();
     }
 
     fn removeGroupInternal(self: *MultiRaftHost, group_id: GroupId) Error!void {
@@ -907,8 +1044,8 @@ pub const MultiRaftHost = struct {
             self.groups_mutex.unlock();
             return error.GroupNotFound;
         };
-        self.groups_mutex.unlock();
         self.removeGroupId(group_id);
+        self.groups_mutex.unlock();
         removed.value.destroy();
     }
 
@@ -955,6 +1092,8 @@ pub const MultiRaftHost = struct {
         defer queued.deinit(self.allocator);
         while (queued.popFront()) |item_value| {
             var item = item_value;
+            _ = self.group_operations_completed.fetchAdd(1, .monotonic);
+            _ = self.group_operations_failed.fetchAdd(1, .monotonic);
             item.command.callback().invoke(.{
                 .group_id = item.command.groupId(),
                 .operation = std.meta.activeTag(item.command),
@@ -978,13 +1117,15 @@ pub const MultiRaftHost = struct {
             _ = self.unknown_group_messages.fetchAdd(1, .monotonic);
             return;
         };
-        return group.transport.enqueueMessage(envelope.message);
+        try group.transport.enqueueMessage(envelope.message);
+        _ = self.envelopes_routed.fetchAdd(1, .monotonic);
     }
 
     fn onPeerEvent(ctx: *anyopaque, event: MultiPeerEvent) Error!void {
         const self: *MultiRaftHost = @ptrCast(@alignCast(ctx));
         const group = self.groups.get(event.group_id) orelse return;
         try group.transport.enqueuePeerEvent(.{ .peer_id = event.peer_id, .kind = event.kind });
+        _ = self.peer_events_routed.fetchAdd(1, .monotonic);
     }
 
     fn ensureGroupRoot(allocator: std.mem.Allocator, config: MultiRaftConfig) Error!void {
