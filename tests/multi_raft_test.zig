@@ -110,6 +110,13 @@ fn drive(hosts: []const *raft.MultiRaftHost, iterations: usize) !void {
     }
 }
 
+test "multi raft: validates priority wake configuration" {
+    var config = raft.MultiRaftConfig{ .node_id = 1, .max_queued_group_wakes = 0 };
+    try std.testing.expectError(error.InvalidConfig, config.validate());
+    config.priority_poll_budget = 0;
+    try config.validate();
+}
+
 test "multi raft: validates and manages group lifecycle" {
     const network = try raft.LoopbackMultiNetwork.create(allocator);
     defer network.destroy();
@@ -219,6 +226,7 @@ test "multi raft: group drive budget schedules groups round robin" {
     const host = try raft.MultiRaftHost.create(allocator, .{
         .node_id = 1,
         .group_drive_budget = 1,
+        .priority_poll_budget = 0,
     }, transport.transport());
     defer host.destroy();
     var first_machine = raft.MockStateMachine.init(allocator);
@@ -249,6 +257,69 @@ test "multi raft: group drive budget schedules groups round robin" {
     try std.testing.expect(third.completed);
 }
 
+test "multi raft: priority polling serves active groups before round robin" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    const host = try raft.MultiRaftHost.create(allocator, .{
+        .node_id = 1,
+        .group_drive_budget = 1,
+        .priority_poll_budget = 1,
+    }, transport.transport());
+    defer host.destroy();
+    var first_machine = raft.MockStateMachine.init(allocator);
+    defer first_machine.deinit();
+    var second_machine = raft.MockStateMachine.init(allocator);
+    defer second_machine.deinit();
+    var active_machine = raft.MockStateMachine.init(allocator);
+    defer active_machine.deinit();
+    try host.addGroup(groupConfig(10, 1, &.{}), first_machine.stateMachine());
+    try host.addGroup(groupConfig(20, 1, &.{}), second_machine.stateMachine());
+    try host.addGroup(groupConfig(30, 1, &.{}), active_machine.stateMachine());
+    while (host.getHostStatus().queued_group_wakes != 0) _ = try host.poll();
+    try host.campaign(10);
+    try host.campaign(20);
+    try host.campaign(30);
+
+    var result = ProposalResult{};
+    try host.propose(30, "priority", result.callback());
+    try std.testing.expectEqual(@as(usize, 1), host.getHostStatus().queued_group_wakes);
+    _ = try host.tick();
+
+    try std.testing.expectEqual(@as(usize, 0), host.getStatus(30).?.node.queued_proposals);
+    try std.testing.expect(host.getStatus(30).?.priority_polls > 0);
+    try std.testing.expect(host.getHostStatus().priority_polls > 0);
+    for (0..3) |_| {
+        if (result.completed) break;
+        _ = try host.poll();
+    }
+    try std.testing.expect(result.completed and result.err == null);
+}
+
+test "multi raft: bounded wake queue falls back to fair scheduling" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    const host = try raft.MultiRaftHost.create(allocator, .{
+        .node_id = 1,
+        .max_queued_group_wakes = 1,
+    }, transport.transport());
+    defer host.destroy();
+    var first_machine = raft.MockStateMachine.init(allocator);
+    defer first_machine.deinit();
+    var second_machine = raft.MockStateMachine.init(allocator);
+    defer second_machine.deinit();
+    try host.addGroup(groupConfig(10, 1, &.{}), first_machine.stateMachine());
+    try host.addGroup(groupConfig(20, 1, &.{}), second_machine.stateMachine());
+
+    const before = host.getHostStatus();
+    try std.testing.expectEqual(@as(usize, 1), before.queued_group_wakes);
+    try std.testing.expectEqual(@as(u64, 1), before.wake_queue_drops);
+    try drive(&.{host}, 2);
+    try std.testing.expect(host.getStatus(10).?.scheduled_iterations > 0);
+    try std.testing.expect(host.getStatus(20).?.scheduled_iterations > 0);
+}
+
 test "multi raft: host and group status expose scheduler activity" {
     const network = try raft.LoopbackMultiNetwork.create(allocator);
     defer network.destroy();
@@ -271,7 +342,8 @@ test "multi raft: host and group status expose scheduler activity" {
     try std.testing.expectEqual(@as(u64, 3), status.host_iterations);
     try std.testing.expectEqual(@as(u64, 3), status.tick_iterations);
     try std.testing.expectEqual(@as(u64, 0), status.poll_iterations);
-    try std.testing.expectEqual(@as(u64, 6), status.groups_driven);
+    try std.testing.expect(status.groups_driven >= 6);
+    try std.testing.expect(status.priority_polls >= 2);
     try std.testing.expect(status.groups_with_work > 0);
 
     const groups = try host.listGroupStatuses(allocator);
@@ -280,7 +352,8 @@ test "multi raft: host and group status expose scheduler activity" {
     try std.testing.expectEqual(@as(raft.GroupId, 10), groups[0].group_id);
     try std.testing.expectEqual(@as(raft.GroupId, 20), groups[1].group_id);
     for (groups) |group| {
-        try std.testing.expectEqual(@as(u64, 3), group.scheduled_iterations);
+        try std.testing.expect(group.scheduled_iterations >= 3);
+        try std.testing.expect(group.priority_polls >= 1);
         try std.testing.expect(group.productive_iterations > 0);
         try std.testing.expect(group.last_host_iteration > 0);
     }
@@ -294,6 +367,7 @@ test "multi raft: pending envelope metrics follow round-robin delivery" {
     const host = try raft.MultiRaftHost.create(allocator, .{
         .node_id = 1,
         .group_drive_budget = 1,
+        .priority_poll_budget = 0,
     }, target_transport.transport());
     defer host.destroy();
     var first_machine = raft.MockStateMachine.init(allocator);

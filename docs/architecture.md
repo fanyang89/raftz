@@ -104,9 +104,11 @@ single-group Transport adapter adds or removes the group ID at the shared
 `MultiTransport` boundary, so a group shutdown cannot stop another group's
 physical connection.
 
-Runtime group operations, host transport polling, and group driving have
-independent budgets. Runtime add/remove/restart commands pass through a bounded
-thread-safe queue and execute only on the host event loop. Atomic counters and
+Runtime group operations, activity-priority polls, host transport polling, and
+round-robin clock driving have independent budgets. Runtime add/remove/restart
+commands pass through a bounded thread-safe queue and execute only on the host
+event loop. Generation-qualified wake hints reduce ingress latency without
+stealing the fair round-robin clock budget. Atomic counters and
 registry locks expose host and per-group status without moving Raft mutation off
 the event thread. Terminal errors are recorded per group and do not stop healthy
 groups. See

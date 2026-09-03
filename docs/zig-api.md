@@ -52,8 +52,10 @@ until after `Raftor.destroy`.
 
 `tick` performs one event-loop iteration: it advances logical time, polls a
 bounded amount of transport work, drains request queues, processes Ready
-batches, and triggers snapshots. `run` repeatedly calls `tick` and blocks until
-`stop` is requested.
+batches, and triggers snapshots. `poll` drains the same proposal and ReadIndex
+ingress without advancing logical time, which allows `MultiRaftHost` to service
+activity hints independently from fair clock scheduling. `run` repeatedly calls
+`tick` and blocks until `stop` is requested.
 
 Set `RaftorConfig.async_ready` to opt into event-loop-local Async Ready group
 commit. `async_ready_max_inflight` bounds the number of staged Ready batches.

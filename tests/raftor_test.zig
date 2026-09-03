@@ -852,6 +852,22 @@ test "raftor: poll does not advance logical time" {
     try std.testing.expectEqual(@as(u64, 0), status.term);
 }
 
+test "raftor: poll drains ingress without advancing logical time" {
+    var sm = MockStateMachine.init(allocator);
+    defer sm.deinit();
+    const node = try Raftor.create(allocator, makeConfig(1), sm.stateMachine());
+    defer node.destroy();
+    try node.campaign();
+    const term = node.getStatus().term;
+    var proposal = ProposalTester{};
+    try node.propose("polled", proposal.callback());
+
+    try std.testing.expect(try node.poll());
+    try std.testing.expect(proposal.applied);
+    try std.testing.expectEqual(term, node.getStatus().term);
+    try std.testing.expectEqualStrings("polled", sm.applied.items[sm.applied.items.len - 1]);
+}
+
 test "raftor: noop transport collects outbound messages" {
     var sm = MockStateMachine.init(allocator);
     defer sm.deinit();

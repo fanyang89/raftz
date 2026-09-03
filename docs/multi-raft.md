@@ -84,12 +84,21 @@ The host uses one event-loop thread:
 
 1. Process up to `group_operation_budget` runtime management requests.
 2. Poll up to `transport_poll_budget` shared envelopes.
-3. Drive up to `group_drive_budget` groups in stable round-robin order.
-4. Each selected group runs one `Raftor.tick` or `Raftor.poll` iteration.
+3. Poll up to `priority_poll_budget` groups woken by ingress or network events.
+4. Drive up to `group_drive_budget` groups in stable round-robin order.
 
-The budget bounds work per host iteration and prevents a large registry from
+Proposal, ReadIndex, envelope, peer-event, and newly-created group activity adds
+a generation-qualified wake to a deduplicated bounded queue. Priority polling
+drains ingress without advancing the Raft logical clock, reducing latency for a
+busy group that is not next in round-robin order. The normal round-robin pass
+still runs independently, so sustained activity cannot starve idle groups or
+their election clocks. A full `max_queued_group_wakes` queue drops only the
+priority hint; the group remains reachable through fair scheduling.
+
+The budgets bound work per host iteration and prevent a large registry from
 monopolizing the caller. A group driven less frequently also advances its Raft
-logical clock less frequently; size the budget and host tick interval together.
+logical clock less frequently; size the round-robin budget and host tick interval
+together. Set `priority_poll_budget` to zero to disable activity hints.
 
 Terminal group errors are isolated and stop only that group. Retryable errors
 are reported by `tick` or `poll` and retained in `MultiRaftGroupStatus`.
@@ -101,9 +110,9 @@ are reported by `tick` or `poll` and retained in `MultiRaftGroupStatus`.
 - group counts by lifecycle state
 - queued management operation count and retained bytes
 - tick, poll, and total host iterations
-- groups driven, productive group iterations, and group errors
+- round-robin/priority drives, productive group iterations, and group errors
 - completed and failed management operations
-- routed envelopes, peer events, and unknown-group messages
+- routed envelopes, peer events, unknown-group messages, queued wakes, and dropped wake hints
 
 `getStatus(group_id)` adds per-group scheduler counters and pending message/event
 counts to the underlying `NodeStatus`. `listGroupStatuses` allocates a sorted
