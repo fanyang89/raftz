@@ -67,6 +67,7 @@ pub const Error = error{
     GroupAlreadyExists,
     GroupNotFound,
     GroupLimitReached,
+    GroupOperationBackpressure,
 
     // RaftLog errors.
     ZeroEntriesInSlice,
@@ -197,6 +198,7 @@ pub fn name(e: Error) []const u8 {
         error.GroupAlreadyExists => "GroupAlreadyExists",
         error.GroupNotFound => "GroupNotFound",
         error.GroupLimitReached => "GroupLimitReached",
+        error.GroupOperationBackpressure => "GroupOperationBackpressure",
         error.ZeroEntriesInSlice => "ZeroEntriesInSlice",
         error.StepLocalMsg => "StepLocalMsg",
         error.StepPeerNotFound => "StepPeerNotFound",

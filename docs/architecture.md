@@ -104,8 +104,10 @@ single-group Transport adapter adds or removes the group ID at the shared
 `MultiTransport` boundary, so a group shutdown cannot stop another group's
 physical connection.
 
-Host transport polling and group driving have independent budgets. Terminal
-errors are recorded per group and do not stop healthy groups. See
+Runtime group operations, host transport polling, and group driving have
+independent budgets. Runtime add/remove/restart commands pass through a bounded
+thread-safe queue and execute only on the host event loop. Terminal errors are
+recorded per group and do not stop healthy groups. See
 [Multi-Raft](multi-raft.md) for the public API and MVP limits.
 
 ## Storage Boundary

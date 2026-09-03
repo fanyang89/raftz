@@ -12,6 +12,7 @@ const raftor_config_mod = @import("raftor_config.zig");
 const state_machine_mod = @import("state_machine.zig");
 const transport_mod = @import("transport.zig");
 const multi_transport_mod = @import("multi_transport.zig");
+const group_config_mod = @import("multi_raft_group_config.zig");
 const proposal_tracker_mod = @import("proposal_tracker.zig");
 
 const Error = error_model.Error;
@@ -27,6 +28,7 @@ const MultiTransport = multi_transport_mod.MultiTransport;
 const Envelope = multi_transport_mod.Envelope;
 const MultiPeerEvent = multi_transport_mod.PeerEvent;
 const GroupId = multi_transport_mod.GroupId;
+const OwnedGroupConfig = group_config_mod.OwnedGroupConfig;
 
 const log = @import("grpc_lite").log;
 
@@ -63,21 +65,22 @@ pub const MultiRaftConfig = struct {
     tick_interval_ms: u64 = 100,
     transport_poll_budget: usize = 1024,
     group_drive_budget: usize = 64,
+    group_operation_budget: usize = 64,
     max_groups: usize = 1024,
     max_group_inbox_messages: usize = 4096,
+    max_queued_group_operations: usize = 256,
+    max_queued_group_operation_bytes: usize = 16 * 1024 * 1024,
 
     pub fn validate(self: MultiRaftConfig) Error!void {
         if (self.node_id == 0) return error.InvalidNodeId;
         if (self.tick_interval_ms == 0 or self.transport_poll_budget == 0) return error.InvalidConfig;
-        if (self.group_drive_budget == 0 or self.max_groups == 0) return error.InvalidConfig;
-        if (self.max_group_inbox_messages == 0) return error.InvalidConfig;
+        if (self.group_drive_budget == 0 or self.group_operation_budget == 0) return error.InvalidConfig;
+        if (self.max_groups == 0 or self.max_group_inbox_messages == 0) return error.InvalidConfig;
+        if (self.max_queued_group_operations == 0 or self.max_queued_group_operation_bytes == 0) return error.InvalidConfig;
     }
 };
 
-pub const MultiRaftGroupConfig = struct {
-    group_id: GroupId,
-    raftor: RaftorConfig,
-};
+pub const MultiRaftGroupConfig = group_config_mod.MultiRaftGroupConfig;
 
 pub const GroupLifecycle = enum {
     active,
@@ -91,6 +94,140 @@ pub const MultiRaftGroupStatus = struct {
     lifecycle: GroupLifecycle,
     node: raftor_mod.NodeStatus,
     last_error: ?Error,
+};
+
+pub const GroupOperationKind = enum {
+    add,
+    remove,
+    restart,
+};
+
+pub const GroupOperationResult = struct {
+    group_id: GroupId,
+    operation: GroupOperationKind,
+    err: ?Error = null,
+};
+
+pub const GroupOperationCallback = struct {
+    ctx: *anyopaque,
+    function: *const fn (ctx: *anyopaque, result: GroupOperationResult) void,
+
+    pub fn invoke(self: GroupOperationCallback, result: GroupOperationResult) void {
+        self.function(self.ctx, result);
+    }
+};
+
+pub const GroupOperationQueueStats = struct {
+    count: usize,
+    bytes: usize,
+};
+
+const GroupOperationCommand = union(GroupOperationKind) {
+    add: struct {
+        config: OwnedGroupConfig,
+        state_machine: StateMachine,
+        callback: GroupOperationCallback,
+    },
+    remove: struct {
+        group_id: GroupId,
+        callback: GroupOperationCallback,
+    },
+    restart: struct {
+        config: OwnedGroupConfig,
+        state_machine: StateMachine,
+        callback: GroupOperationCallback,
+    },
+
+    fn groupId(self: GroupOperationCommand) GroupId {
+        return switch (self) {
+            .add => |value| value.config.value.group_id,
+            .remove => |value| value.group_id,
+            .restart => |value| value.config.value.group_id,
+        };
+    }
+
+    fn callback(self: GroupOperationCommand) GroupOperationCallback {
+        return switch (self) {
+            .add => |value| value.callback,
+            .remove => |value| value.callback,
+            .restart => |value| value.callback,
+        };
+    }
+
+    fn deinit(self: *GroupOperationCommand, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .add => |*value| value.config.deinit(allocator),
+            .restart => |*value| value.config.deinit(allocator),
+            .remove => {},
+        }
+    }
+};
+
+const GroupOperationQueue = struct {
+    const Item = struct {
+        command: GroupOperationCommand,
+        bytes: usize,
+    };
+
+    mutex: std.atomic.Mutex = .unlocked,
+    items: std.Deque(Item) = .empty,
+    queued_bytes: usize = 0,
+    max_items: usize,
+    max_bytes: usize,
+    allocator: std.mem.Allocator,
+
+    fn init(allocator: std.mem.Allocator, max_items: usize, max_bytes: usize) GroupOperationQueue {
+        return .{
+            .allocator = allocator,
+            .max_items = max_items,
+            .max_bytes = max_bytes,
+        };
+    }
+
+    fn deinit(self: *GroupOperationQueue) void {
+        spinLock(&self.mutex);
+        defer self.mutex.unlock();
+        while (self.items.popFront()) |item_value| {
+            var item = item_value;
+            item.command.deinit(self.allocator);
+        }
+        self.items.deinit(self.allocator);
+    }
+
+    /// Ownership transfers only on success.
+    fn push(self: *GroupOperationQueue, command: GroupOperationCommand, bytes: usize) Error!void {
+        spinLock(&self.mutex);
+        defer self.mutex.unlock();
+        if (self.items.len >= self.max_items or bytes > self.max_bytes -| self.queued_bytes) {
+            return error.GroupOperationBackpressure;
+        }
+        try self.items.pushBack(self.allocator, .{ .command = command, .bytes = bytes });
+        self.queued_bytes += bytes;
+    }
+
+    fn pop(self: *GroupOperationQueue) ?Item {
+        spinLock(&self.mutex);
+        defer self.mutex.unlock();
+        const item = self.items.popFront() orelse return null;
+        self.queued_bytes -= item.bytes;
+        return item;
+    }
+
+    fn takeAll(self: *GroupOperationQueue) std.Deque(Item) {
+        spinLock(&self.mutex);
+        defer self.mutex.unlock();
+        const items = self.items;
+        self.items = .empty;
+        self.queued_bytes = 0;
+        return items;
+    }
+
+    fn stats(self: *const GroupOperationQueue) GroupOperationQueueStats {
+        const mutex = @constCast(&self.mutex);
+        spinLock(mutex);
+        defer mutex.unlock();
+        return .{ .count = self.items.len, .bytes = self.queued_bytes };
+    }
 };
 
 const GroupTransport = struct {
@@ -274,6 +411,7 @@ const Group = struct {
     transport: GroupTransport,
     raftor: *Raftor,
     data_dir: ?[:0]u8,
+    config: OwnedGroupConfig,
     status_mutex: std.atomic.Mutex = .unlocked,
     lifecycle: GroupLifecycle = .active,
     last_error: ?Error = null,
@@ -282,7 +420,7 @@ const Group = struct {
     fn create(
         allocator: std.mem.Allocator,
         host_config: MultiRaftConfig,
-        group_config: MultiRaftGroupConfig,
+        group_config: *OwnedGroupConfig,
         shared_transport: MultiTransport,
         state_machine: StateMachine,
     ) Error!*Group {
@@ -295,26 +433,29 @@ const Group = struct {
             data_dir = try std.fmt.allocPrintSentinel(
                 allocator,
                 "{s}/groups/{}",
-                .{ host_config.data_dir, group_config.group_id },
+                .{ host_config.data_dir, group_config.value.group_id },
                 0,
             );
         }
 
+        const owned_config = group_config.transfer();
         self.* = .{
-            .id = group_config.group_id,
+            .id = owned_config.value.group_id,
             .transport = GroupTransport.init(
                 allocator,
-                group_config.group_id,
+                owned_config.value.group_id,
                 shared_transport,
                 host_config.max_group_inbox_messages,
             ),
             .raftor = undefined,
             .data_dir = data_dir,
+            .config = owned_config,
             .allocator = allocator,
         };
+        errdefer self.config.deinit(allocator);
         errdefer self.transport.deinit();
 
-        var config = group_config.raftor;
+        var config = self.config.value.raftor;
         config.data_dir = if (data_dir) |path| path else "";
         config.file_system = host_config.file_system;
         self.raftor = try Raftor.createWithTransport(
@@ -329,6 +470,7 @@ const Group = struct {
     fn destroy(self: *Group) void {
         self.raftor.destroy();
         self.transport.deinit();
+        self.config.deinit(self.allocator);
         if (self.data_dir) |path| self.allocator.free(path);
         self.allocator.destroy(self);
     }
@@ -375,10 +517,13 @@ pub const MultiRaftHost = struct {
     config: MultiRaftConfig,
     transport: MultiTransport,
     groups: std.AutoHashMap(GroupId, *Group),
+    groups_mutex: std.atomic.Mutex = .unlocked,
     group_ids: std.ArrayList(GroupId) = .empty,
+    group_operations: GroupOperationQueue,
     lifecycle_mutex: std.atomic.Mutex = .unlocked,
     event_loop_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     event_loop_thread_id: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    shutdown_callback_thread_id: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     run_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     stopped: bool = false,
@@ -402,8 +547,14 @@ pub const MultiRaftHost = struct {
             .config = config,
             .transport = transport,
             .groups = std.AutoHashMap(GroupId, *Group).init(allocator),
+            .group_operations = GroupOperationQueue.init(
+                allocator,
+                config.max_queued_group_operations,
+                config.max_queued_group_operation_bytes,
+            ),
         };
         errdefer self.groups.deinit();
+        errdefer self.group_operations.deinit();
 
         self.transport.setEnvelopeCallback(.{ .ctx = self, .function = onEnvelope });
         self.transport.setPeerEventCallback(.{ .ctx = self, .function = onPeerEvent });
@@ -417,8 +568,11 @@ pub const MultiRaftHost = struct {
     }
 
     pub fn destroy(self: *MultiRaftHost) void {
-        if (self.event_loop_thread_id.load(.acquire) == currentThreadId()) {
-            @panic("MultiRaftHost.destroy cannot be called from a group callback");
+        const thread_id = currentThreadId();
+        if (self.event_loop_thread_id.load(.acquire) == thread_id or
+            self.shutdown_callback_thread_id.load(.acquire) == thread_id)
+        {
+            @panic("MultiRaftHost.destroy cannot be called from a host callback");
         }
         self.stop();
         while (self.run_active.load(.acquire) or self.event_loop_active.load(.acquire)) {
@@ -429,6 +583,7 @@ pub const MultiRaftHost = struct {
         while (iterator.next()) |group| group.*.destroy();
         self.groups.deinit();
         self.group_ids.deinit(self.allocator);
+        self.group_operations.deinit();
         self.transport.setEnvelopeCallback(null);
         self.transport.setPeerEventCallback(null);
         self.allocator.destroy(self);
@@ -441,37 +596,72 @@ pub const MultiRaftHost = struct {
     ) Error!void {
         try self.enterManagement();
         defer self.leaveManagement();
-        if (config.group_id == 0) return error.InvalidGroupId;
-        if (config.raftor.nodeId() != self.config.node_id) return error.InvalidNodeId;
-        if (config.raftor.data_dir.len != 0 or config.raftor.file_system != null) return error.InvalidConfig;
-        if (self.groups.contains(config.group_id)) return error.GroupAlreadyExists;
-        if (self.groups.count() >= self.config.max_groups) return error.GroupLimitReached;
-        try self.groups.ensureUnusedCapacity(1);
-        try self.group_ids.ensureUnusedCapacity(self.allocator, 1);
-
-        const group = try Group.create(
-            self.allocator,
-            self.config,
-            config,
-            self.transport,
-            state_machine,
-        );
-        self.groups.putAssumeCapacity(config.group_id, group);
-        self.group_ids.appendAssumeCapacity(config.group_id);
-        std.mem.sort(GroupId, self.group_ids.items, {}, std.sort.asc(GroupId));
+        try self.validateGroupConfig(config);
+        var owned = try OwnedGroupConfig.clone(self.allocator, config);
+        defer owned.deinit(self.allocator);
+        try self.addGroupOwned(&owned, state_machine);
     }
 
     pub fn removeGroup(self: *MultiRaftHost, group_id: GroupId) Error!void {
         try self.enterManagement();
         defer self.leaveManagement();
-        const removed = self.groups.fetchRemove(group_id) orelse return error.GroupNotFound;
-        for (self.group_ids.items, 0..) |id, index| {
-            if (id == group_id) {
-                _ = self.group_ids.orderedRemove(index);
-                break;
-            }
-        }
-        removed.value.destroy();
+        try self.removeGroupInternal(group_id);
+    }
+
+    /// Queue a group creation for the host event-loop thread.
+    pub fn requestAddGroup(
+        self: *MultiRaftHost,
+        config: MultiRaftGroupConfig,
+        state_machine: StateMachine,
+        callback: GroupOperationCallback,
+    ) Error!void {
+        try self.validateGroupConfig(config);
+        const bytes = try group_config_mod.estimatedSize(config);
+        if (bytes > self.config.max_queued_group_operation_bytes) return error.GroupOperationBackpressure;
+        var command = GroupOperationCommand{ .add = .{
+            .config = try OwnedGroupConfig.clone(self.allocator, config),
+            .state_machine = state_machine,
+            .callback = callback,
+        } };
+        self.enqueueGroupOperation(command, bytes) catch |err| {
+            command.deinit(self.allocator);
+            return err;
+        };
+    }
+
+    /// Queue a group removal for the host event-loop thread.
+    pub fn requestRemoveGroup(
+        self: *MultiRaftHost,
+        group_id: GroupId,
+        callback: GroupOperationCallback,
+    ) Error!void {
+        if (group_id == 0) return error.InvalidGroupId;
+        try self.enqueueGroupOperation(.{ .remove = .{
+            .group_id = group_id,
+            .callback = callback,
+        } }, 0);
+    }
+
+    /// Replace a group using a new configuration and StateMachine.
+    /// If recreation fails, the old group remains removed and can be added again.
+    pub fn requestRestartGroup(
+        self: *MultiRaftHost,
+        config: MultiRaftGroupConfig,
+        state_machine: StateMachine,
+        callback: GroupOperationCallback,
+    ) Error!void {
+        try self.validateGroupConfig(config);
+        const bytes = try group_config_mod.estimatedSize(config);
+        if (bytes > self.config.max_queued_group_operation_bytes) return error.GroupOperationBackpressure;
+        var command = GroupOperationCommand{ .restart = .{
+            .config = try OwnedGroupConfig.clone(self.allocator, config),
+            .state_machine = state_machine,
+            .callback = callback,
+        } };
+        self.enqueueGroupOperation(command, bytes) catch |err| {
+            command.deinit(self.allocator);
+            return err;
+        };
     }
 
     pub fn tick(self: *MultiRaftHost) Error!bool {
@@ -514,9 +704,15 @@ pub const MultiRaftHost = struct {
         self.stop_requested.store(true, .release);
         self.lifecycle_mutex.unlock();
 
-        if (self.event_loop_thread_id.load(.acquire) != currentThreadId()) {
+        const thread_id = currentThreadId();
+        if (self.event_loop_thread_id.load(.acquire) != thread_id) {
             while (self.event_loop_active.load(.acquire)) sleepNanoseconds(std.time.ns_per_ms);
         }
+        if (self.shutdown_callback_thread_id.cmpxchgStrong(0, thread_id, .acq_rel, .acquire) != null) {
+            @panic("concurrent MultiRaftHost stop callbacks");
+        }
+        defer self.shutdown_callback_thread_id.store(0, .release);
+        self.failQueuedGroupOperations(error.ShuttingDown);
         var iterator = self.groups.valueIterator();
         while (iterator.next()) |group| {
             group.*.markStopping();
@@ -531,6 +727,11 @@ pub const MultiRaftHost = struct {
         data: []const u8,
         callback: proposal_tracker_mod.ProposalCallback,
     ) Error!void {
+        spinLock(&self.lifecycle_mutex);
+        defer self.lifecycle_mutex.unlock();
+        if (self.stopped) return error.ShuttingDown;
+        spinLock(&self.groups_mutex);
+        defer self.groups_mutex.unlock();
         const group = self.groups.get(group_id) orelse return error.GroupNotFound;
         const status = group.lifecycleSnapshot();
         if (status.lifecycle == .terminal) return status.last_error.?;
@@ -544,6 +745,11 @@ pub const MultiRaftHost = struct {
         context: []const u8,
         callback: proposal_tracker_mod.ReadIndexCallback,
     ) Error!void {
+        spinLock(&self.lifecycle_mutex);
+        defer self.lifecycle_mutex.unlock();
+        if (self.stopped) return error.ShuttingDown;
+        spinLock(&self.groups_mutex);
+        defer self.groups_mutex.unlock();
         const group = self.groups.get(group_id) orelse return error.GroupNotFound;
         const status = group.lifecycleSnapshot();
         if (status.lifecycle == .terminal) return status.last_error.?;
@@ -555,11 +761,19 @@ pub const MultiRaftHost = struct {
         if (self.run_active.load(.acquire)) return error.EventLoopBusy;
         try self.enterEventLoop();
         defer self.leaveEventLoop();
-        const group = self.groups.get(group_id) orelse return error.GroupNotFound;
+        spinLock(&self.groups_mutex);
+        const group = self.groups.get(group_id) orelse {
+            self.groups_mutex.unlock();
+            return error.GroupNotFound;
+        };
+        self.groups_mutex.unlock();
         try group.raftor.campaign();
     }
 
     pub fn getStatus(self: *const MultiRaftHost, group_id: GroupId) ?MultiRaftGroupStatus {
+        const mutex = @constCast(&self.groups_mutex);
+        spinLock(mutex);
+        defer mutex.unlock();
         const group = self.groups.get(group_id) orelse return null;
         const status = group.lifecycleSnapshot();
         return .{
@@ -570,13 +784,24 @@ pub const MultiRaftHost = struct {
         };
     }
 
+    /// Event-loop escape hatch. Unavailable while `run` or queued management is active.
     pub fn getRaftor(self: *MultiRaftHost, group_id: GroupId) ?*Raftor {
+        if (self.run_active.load(.acquire) or self.group_operations.stats().count != 0) return null;
+        spinLock(&self.groups_mutex);
+        defer self.groups_mutex.unlock();
         const group = self.groups.get(group_id) orelse return null;
         return group.raftor;
     }
 
     pub fn groupCount(self: *const MultiRaftHost) usize {
+        const mutex = @constCast(&self.groups_mutex);
+        spinLock(mutex);
+        defer mutex.unlock();
         return self.groups.count();
+    }
+
+    pub fn queuedGroupOperations(self: *const MultiRaftHost) GroupOperationQueueStats {
+        return self.group_operations.stats();
     }
 
     pub fn unknownGroupMessageCount(self: *const MultiRaftHost) usize {
@@ -584,7 +809,8 @@ pub const MultiRaftHost = struct {
     }
 
     fn drive(self: *MultiRaftHost, advance_clock: bool) Error!bool {
-        var had_work = false;
+        var had_work = self.processGroupOperations();
+        if (self.stop_requested.load(.acquire)) return had_work;
         for (0..self.config.transport_poll_budget) |_| {
             if (!try self.transport.pollOne()) break;
             had_work = true;
@@ -615,6 +841,133 @@ pub const MultiRaftHost = struct {
         }
         if (first_error) |err| return err;
         return had_work;
+    }
+
+    fn processGroupOperations(self: *MultiRaftHost) bool {
+        var had_work = false;
+        for (0..self.config.group_operation_budget) |_| {
+            var item = self.group_operations.pop() orelse break;
+            had_work = true;
+            const group_id = item.command.groupId();
+            const operation = std.meta.activeTag(item.command);
+            const operation_error: ?Error = switch (item.command) {
+                .add => |*value| if (self.addGroupOwned(&value.config, value.state_machine)) |_| null else |err| err,
+                .remove => |value| if (self.removeGroupInternal(value.group_id)) |_| null else |err| err,
+                .restart => |*value| if (self.restartGroupOwned(&value.config, value.state_machine)) |_| null else |err| err,
+            };
+            item.command.callback().invoke(.{
+                .group_id = group_id,
+                .operation = operation,
+                .err = operation_error,
+            });
+            item.command.deinit(self.allocator);
+            if (self.stop_requested.load(.acquire)) break;
+        }
+        return had_work;
+    }
+
+    fn addGroupOwned(
+        self: *MultiRaftHost,
+        config: *OwnedGroupConfig,
+        state_machine: StateMachine,
+    ) Error!void {
+        const group_id = config.value.group_id;
+        spinLock(&self.groups_mutex);
+        if (self.groups.contains(group_id)) {
+            self.groups_mutex.unlock();
+            return error.GroupAlreadyExists;
+        }
+        if (self.groups.count() >= self.config.max_groups) {
+            self.groups_mutex.unlock();
+            return error.GroupLimitReached;
+        }
+        self.groups.ensureUnusedCapacity(1) catch |err| {
+            self.groups_mutex.unlock();
+            return err;
+        };
+        self.groups_mutex.unlock();
+        try self.group_ids.ensureUnusedCapacity(self.allocator, 1);
+        const group = try Group.create(
+            self.allocator,
+            self.config,
+            config,
+            self.transport,
+            state_machine,
+        );
+        spinLock(&self.groups_mutex);
+        self.groups.putAssumeCapacity(group_id, group);
+        self.groups_mutex.unlock();
+        self.group_ids.appendAssumeCapacity(group_id);
+        std.mem.sort(GroupId, self.group_ids.items, {}, std.sort.asc(GroupId));
+    }
+
+    fn removeGroupInternal(self: *MultiRaftHost, group_id: GroupId) Error!void {
+        spinLock(&self.groups_mutex);
+        const removed = self.groups.fetchRemove(group_id) orelse {
+            self.groups_mutex.unlock();
+            return error.GroupNotFound;
+        };
+        self.groups_mutex.unlock();
+        self.removeGroupId(group_id);
+        removed.value.destroy();
+    }
+
+    fn restartGroupOwned(
+        self: *MultiRaftHost,
+        config: *OwnedGroupConfig,
+        state_machine: StateMachine,
+    ) Error!void {
+        spinLock(&self.groups_mutex);
+        const exists = self.groups.contains(config.value.group_id);
+        self.groups_mutex.unlock();
+        if (!exists) return error.GroupNotFound;
+        try self.removeGroupInternal(config.value.group_id);
+        return self.addGroupOwned(config, state_machine);
+    }
+
+    fn removeGroupId(self: *MultiRaftHost, group_id: GroupId) void {
+        for (self.group_ids.items, 0..) |id, index| {
+            if (id == group_id) {
+                _ = self.group_ids.orderedRemove(index);
+                if (self.group_ids.items.len == 0) {
+                    self.round_robin_cursor = 0;
+                } else if (self.round_robin_cursor >= self.group_ids.items.len) {
+                    self.round_robin_cursor %= self.group_ids.items.len;
+                }
+                return;
+            }
+        }
+    }
+
+    fn enqueueGroupOperation(
+        self: *MultiRaftHost,
+        command: GroupOperationCommand,
+        bytes: usize,
+    ) Error!void {
+        spinLock(&self.lifecycle_mutex);
+        defer self.lifecycle_mutex.unlock();
+        if (self.stopped) return error.ShuttingDown;
+        return self.group_operations.push(command, bytes);
+    }
+
+    fn failQueuedGroupOperations(self: *MultiRaftHost, err: Error) void {
+        var queued = self.group_operations.takeAll();
+        defer queued.deinit(self.allocator);
+        while (queued.popFront()) |item_value| {
+            var item = item_value;
+            item.command.callback().invoke(.{
+                .group_id = item.command.groupId(),
+                .operation = std.meta.activeTag(item.command),
+                .err = err,
+            });
+            item.command.deinit(self.allocator);
+        }
+    }
+
+    fn validateGroupConfig(self: *const MultiRaftHost, config: MultiRaftGroupConfig) Error!void {
+        if (config.group_id == 0) return error.InvalidGroupId;
+        if (config.raftor.nodeId() != self.config.node_id) return error.InvalidNodeId;
+        if (config.raftor.data_dir.len != 0 or config.raftor.file_system != null) return error.InvalidConfig;
     }
 
     fn onEnvelope(ctx: *anyopaque, envelope: Envelope) Error!void {

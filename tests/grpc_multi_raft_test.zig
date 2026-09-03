@@ -4,6 +4,21 @@ const raft = @import("raftz");
 const allocator = std.heap.smp_allocator;
 const cluster_id = [_]u8{7} ** 16;
 
+const GroupOperationCapture = struct {
+    completed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    result: raft.GroupOperationResult = undefined,
+
+    fn invoke(ctx: *anyopaque, result: raft.GroupOperationResult) void {
+        const self: *GroupOperationCapture = @ptrCast(@alignCast(ctx));
+        self.result = result;
+        self.completed.store(true, .release);
+    }
+
+    fn callback(self: *GroupOperationCapture) raft.GroupOperationCallback {
+        return .{ .ctx = self, .function = invoke };
+    }
+};
+
 const ProposalResult = struct {
     completed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     err: ?raft.Error = null,
@@ -164,6 +179,48 @@ test "grpc multi raft: two groups share one peer stream" {
     try std.testing.expectEqual(@as(usize, 1), second_transport.peerCount());
     try first_host.removeGroup(20);
     try second_host.removeGroup(20);
+    try std.testing.expectEqual(@as(usize, 0), first_transport.peerCount());
+    try std.testing.expectEqual(@as(usize, 0), second_transport.peerCount());
+
+    var runtime_first_machine = raft.MockStateMachine.init(allocator);
+    defer runtime_first_machine.deinit();
+    var runtime_second_machine = raft.MockStateMachine.init(allocator);
+    defer runtime_second_machine.deinit();
+    var runtime_first_added = GroupOperationCapture{};
+    var runtime_second_added = GroupOperationCapture{};
+    try first_host.requestAddGroup(
+        groupConfig(30, 1, first_address, &peers),
+        runtime_first_machine.stateMachine(),
+        runtime_first_added.callback(),
+    );
+    try second_host.requestAddGroup(
+        groupConfig(30, 2, second_address, &peers),
+        runtime_second_machine.stateMachine(),
+        runtime_second_added.callback(),
+    );
+    for (0..1000) |_| {
+        try drive(first_host, second_host, 1);
+        if (runtime_first_added.completed.load(.acquire) and runtime_second_added.completed.load(.acquire)) break;
+    }
+    try std.testing.expect(runtime_first_added.completed.load(.acquire));
+    try std.testing.expect(runtime_second_added.completed.load(.acquire));
+    try std.testing.expect(runtime_first_added.result.err == null);
+    try std.testing.expect(runtime_second_added.result.err == null);
+    try std.testing.expectEqual(@as(usize, 1), first_transport.peerCount());
+    try std.testing.expectEqual(@as(usize, 1), second_transport.peerCount());
+
+    var runtime_first_removed = GroupOperationCapture{};
+    var runtime_second_removed = GroupOperationCapture{};
+    try first_host.requestRemoveGroup(30, runtime_first_removed.callback());
+    try second_host.requestRemoveGroup(30, runtime_second_removed.callback());
+    for (0..1000) |_| {
+        try drive(first_host, second_host, 1);
+        if (runtime_first_removed.completed.load(.acquire) and runtime_second_removed.completed.load(.acquire)) break;
+    }
+    try std.testing.expect(runtime_first_removed.completed.load(.acquire));
+    try std.testing.expect(runtime_second_removed.completed.load(.acquire));
+    try std.testing.expect(runtime_first_removed.result.err == null);
+    try std.testing.expect(runtime_second_removed.result.err == null);
     try std.testing.expectEqual(@as(usize, 0), first_transport.peerCount());
     try std.testing.expectEqual(@as(usize, 0), second_transport.peerCount());
 }

@@ -55,17 +55,37 @@ try host.addGroup(.{
 unset. The StateMachine is borrowed and must remain alive until the group is
 removed or the host is destroyed.
 
-Group management is serialized and is rejected while `run` is active. Proposal
-and ReadIndex submission may run concurrently with `run` under the same allocator
-requirements as `Raftor`.
+`addGroup` and `removeGroup` are synchronous management APIs for a stopped host.
+Runtime management uses the thread-safe queue:
+
+- `requestAddGroup`
+- `requestRemoveGroup`
+- `requestRestartGroup`
+
+Accepted requests complete exactly once through `GroupOperationCallback` on the
+host event-loop thread. The queue deep-copies all nested configuration strings,
+peer contexts, and legacy migration data. The supplied StateMachine remains
+borrowed and must stay alive after a successful add or restart. Queue count and
+retained bytes are bounded by `max_queued_group_operations` and
+`max_queued_group_operation_bytes`; saturation returns
+`GroupOperationBackpressure`. `queuedGroupOperations` reports both values.
+
+Restart destroys the current group and reopens its per-group WAL with the new
+configuration and StateMachine. If recreation fails, the group remains removed
+and can be added again. `stop` completes every accepted but unprocessed operation
+with `ShuttingDown`.
+
+Proposal and ReadIndex submission may run concurrently with `run` and runtime
+group management under the same allocator requirements as `Raftor`.
 
 ## Scheduling
 
 The host uses one event-loop thread:
 
-1. Poll up to `transport_poll_budget` shared envelopes.
-2. Drive up to `group_drive_budget` groups in stable round-robin order.
-3. Each selected group runs one `Raftor.tick` or `Raftor.poll` iteration.
+1. Process up to `group_operation_budget` runtime management requests.
+2. Poll up to `transport_poll_budget` shared envelopes.
+3. Drive up to `group_drive_budget` groups in stable round-robin order.
+4. Each selected group runs one `Raftor.tick` or `Raftor.poll` iteration.
 
 The budget bounds work per host iteration and prevents a large registry from
 monopolizing the caller. A group driven less frequently also advances its Raft

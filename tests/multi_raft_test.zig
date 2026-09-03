@@ -50,6 +50,23 @@ const FailingStateMachine = struct {
     };
 };
 
+const GroupOperationCapture = struct {
+    completed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    result: raft.GroupOperationResult = undefined,
+    callback_thread: ?std.Thread.Id = null,
+
+    fn invoke(ctx: *anyopaque, result: raft.GroupOperationResult) void {
+        const self: *GroupOperationCapture = @ptrCast(@alignCast(ctx));
+        self.result = result;
+        self.callback_thread = std.Thread.getCurrentId();
+        self.completed.store(true, .release);
+    }
+
+    fn callback(self: *GroupOperationCapture) raft.GroupOperationCallback {
+        return .{ .ctx = self, .function = invoke };
+    }
+};
+
 const ProposalResult = struct {
     completed: bool = false,
     err: ?raft.Error = null,
@@ -77,6 +94,14 @@ fn groupConfig(group_id: raft.GroupId, node_id: u64, peers: []const raft.Peer) r
     config.initial_peers = peers;
     config.snapshot_entries_threshold = 0;
     return .{ .group_id = group_id, .raftor = config };
+}
+
+fn waitGroupOperation(capture: *const GroupOperationCapture) !void {
+    for (0..1000) |_| {
+        if (capture.completed.load(.acquire)) return;
+        try std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .awake);
+    }
+    return error.TestTimeout;
 }
 
 fn drive(hosts: []const *raft.MultiRaftHost, iterations: usize) !void {
@@ -363,6 +388,157 @@ test "multi raft: durable groups use independent WAL directories" {
     try std.testing.expectEqualStrings("second", restored_two.applied.items[restored_two.applied.items.len - 1]);
 }
 
+test "multi raft: runtime group add and remove execute on the host loop" {
+    const thread_allocator = std.heap.smp_allocator;
+    const network = try raft.LoopbackMultiNetwork.create(thread_allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    const host = try raft.MultiRaftHost.create(thread_allocator, .{
+        .node_id = 1,
+        .tick_interval_ms = 1,
+    }, transport.transport());
+    defer host.destroy();
+    var machine = raft.MockStateMachine.init(thread_allocator);
+    defer machine.deinit();
+
+    const RunState = struct {
+        host: *raft.MultiRaftHost,
+        err: ?raft.Error = null,
+
+        fn run(self: *@This()) void {
+            self.host.run() catch |err| {
+                self.err = err;
+            };
+        }
+    };
+    var run_state = RunState{ .host = host };
+    const thread = try std.Thread.spawn(.{}, RunState.run, .{&run_state});
+    while (!host.isRunning()) std.atomic.spinLoopHint();
+
+    const caller_thread = std.Thread.getCurrentId();
+    var added = GroupOperationCapture{};
+    try host.requestAddGroup(groupConfig(41, 1, &.{}), machine.stateMachine(), added.callback());
+    try waitGroupOperation(&added);
+    try std.testing.expectEqual(raft.GroupOperationKind.add, added.result.operation);
+    try std.testing.expect(added.result.err == null);
+    try std.testing.expect(added.callback_thread.? != caller_thread);
+    try std.testing.expectEqual(@as(usize, 1), host.groupCount());
+
+    var removed = GroupOperationCapture{};
+    try host.requestRemoveGroup(41, removed.callback());
+    try waitGroupOperation(&removed);
+    try std.testing.expectEqual(raft.GroupOperationKind.remove, removed.result.operation);
+    try std.testing.expect(removed.result.err == null);
+    try std.testing.expectEqual(@as(usize, 0), host.groupCount());
+
+    host.stop();
+    thread.join();
+    try std.testing.expect(run_state.err == null);
+}
+
+test "multi raft: runtime restart reopens the group WAL" {
+    const thread_allocator = std.heap.smp_allocator;
+    var fixture = try raft.FsTestFixture.init(thread_allocator, .real);
+    defer fixture.deinit();
+    const network = try raft.LoopbackMultiNetwork.create(thread_allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    const host = try raft.MultiRaftHost.create(thread_allocator, .{
+        .node_id = 1,
+        .data_dir = fixture.root(),
+        .file_system = fixture.fs(),
+        .tick_interval_ms = 1,
+    }, transport.transport());
+    defer host.destroy();
+    var original = raft.MockStateMachine.init(thread_allocator);
+    defer original.deinit();
+    var restored = raft.MockStateMachine.init(thread_allocator);
+    defer restored.deinit();
+    const config = groupConfig(51, 1, &.{});
+    try host.addGroup(config, original.stateMachine());
+    try host.campaign(51);
+    var proposed = ProposalResult{};
+    try host.propose(51, "before-restart", proposed.callback());
+    try drive(&.{host}, 10);
+    try std.testing.expect(proposed.completed and proposed.err == null);
+
+    const RunState = struct {
+        host: *raft.MultiRaftHost,
+        err: ?raft.Error = null,
+
+        fn run(self: *@This()) void {
+            self.host.run() catch |err| {
+                self.err = err;
+            };
+        }
+    };
+    var run_state = RunState{ .host = host };
+    const thread = try std.Thread.spawn(.{}, RunState.run, .{&run_state});
+    while (!host.isRunning()) std.atomic.spinLoopHint();
+    var restarted = GroupOperationCapture{};
+    try host.requestRestartGroup(config, restored.stateMachine(), restarted.callback());
+    try waitGroupOperation(&restarted);
+    try std.testing.expectEqual(raft.GroupOperationKind.restart, restarted.result.operation);
+    try std.testing.expect(restarted.result.err == null);
+    for (0..1000) |_| {
+        if (host.getStatus(51).?.node.applied_index >= 2) break;
+        try std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .awake);
+    }
+    host.stop();
+    thread.join();
+
+    try std.testing.expect(run_state.err == null);
+    try std.testing.expect(restored.applied.items.len >= 2);
+    try std.testing.expectEqualStrings("before-restart", restored.applied.items[restored.applied.items.len - 1]);
+}
+
+test "multi raft: runtime operation failures complete through callbacks" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    const host = try raft.MultiRaftHost.create(allocator, .{ .node_id = 1 }, transport.transport());
+    defer host.destroy();
+    var machine = raft.MockStateMachine.init(allocator);
+    defer machine.deinit();
+    var first = GroupOperationCapture{};
+    var duplicate = GroupOperationCapture{};
+
+    try host.requestAddGroup(groupConfig(58, 1, &.{}), machine.stateMachine(), first.callback());
+    try host.requestAddGroup(groupConfig(58, 1, &.{}), machine.stateMachine(), duplicate.callback());
+    _ = try host.poll();
+    try std.testing.expect(first.completed.load(.acquire) and first.result.err == null);
+    try std.testing.expect(duplicate.completed.load(.acquire));
+    try std.testing.expectEqual(error.GroupAlreadyExists, duplicate.result.err.?);
+}
+
+test "multi raft: group operation backpressure and stop drain callbacks" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    const host = try raft.MultiRaftHost.create(allocator, .{
+        .node_id = 1,
+        .max_queued_group_operations = 1,
+    }, transport.transport());
+    defer host.destroy();
+    var first_machine = raft.MockStateMachine.init(allocator);
+    defer first_machine.deinit();
+    var second_machine = raft.MockStateMachine.init(allocator);
+    defer second_machine.deinit();
+    var accepted = GroupOperationCapture{};
+    var rejected = GroupOperationCapture{};
+
+    try host.requestAddGroup(groupConfig(61, 1, &.{}), first_machine.stateMachine(), accepted.callback());
+    try std.testing.expectError(
+        error.GroupOperationBackpressure,
+        host.requestAddGroup(groupConfig(62, 1, &.{}), second_machine.stateMachine(), rejected.callback()),
+    );
+    try std.testing.expectEqual(@as(usize, 1), host.queuedGroupOperations().count);
+    host.stop();
+    try std.testing.expect(accepted.completed.load(.acquire));
+    try std.testing.expectEqual(error.ShuttingDown, accepted.result.err.?);
+    try std.testing.expect(!rejected.completed.load(.acquire));
+}
+
 fn exerciseMultiRaftAllocations(test_allocator: std.mem.Allocator) !void {
     const network = try raft.LoopbackMultiNetwork.create(test_allocator);
     defer network.destroy();
@@ -376,6 +552,28 @@ fn exerciseMultiRaftAllocations(test_allocator: std.mem.Allocator) !void {
 
 test "multi raft: allocation failures unwind host and group ownership" {
     try std.testing.checkAllAllocationFailures(allocator, exerciseMultiRaftAllocations, .{});
+}
+
+fn exerciseRuntimeGroupOperationAllocations(test_allocator: std.mem.Allocator) !void {
+    const network = try raft.LoopbackMultiNetwork.create(test_allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    const host = try raft.MultiRaftHost.create(test_allocator, .{ .node_id = 1 }, transport.transport());
+    defer host.destroy();
+    var machine = raft.MockStateMachine.init(test_allocator);
+    defer machine.deinit();
+    var capture = GroupOperationCapture{};
+    try host.requestAddGroup(groupConfig(1, 1, &.{}), machine.stateMachine(), capture.callback());
+    host.stop();
+    try std.testing.expect(capture.completed.load(.acquire));
+}
+
+test "multi raft: runtime operation allocation failures release queued configs" {
+    try std.testing.checkAllAllocationFailures(
+        allocator,
+        exerciseRuntimeGroupOperationAllocations,
+        .{},
+    );
 }
 
 test "multi raft: envelope codec round trips group and message" {
