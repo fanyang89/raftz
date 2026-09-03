@@ -1719,6 +1719,26 @@ test "raftor: snapshot triggers at entries threshold" {
     try std.testing.expect(sm.snapshot_count >= 1);
 }
 
+test "raftor: external automatic snapshot scheduler preserves due state" {
+    var sm = MockStateMachine.init(allocator);
+    defer sm.deinit();
+    var config = makeConfig(1);
+    config.snapshot_entries_threshold = 1;
+    config.snapshot_retry_min_ticks = 0;
+    config.auto_snapshot_on_tick = false;
+    const r = try Raftor.create(allocator, config, sm.stateMachine());
+    defer r.destroy();
+    try r.campaign();
+    var proposal = ProposalTester{};
+    try r.propose("external", proposal.callback());
+    for (0..5) |_| _ = try r.tick();
+
+    try std.testing.expectEqual(@as(usize, 0), sm.snapshot_count);
+    try std.testing.expect(try r.takeAutomaticSnapshotIfDue());
+    try std.testing.expectEqual(@as(usize, 1), sm.snapshot_count);
+    try std.testing.expect(!(try r.takeAutomaticSnapshotIfDue()));
+}
+
 test "raftor: snapshot threshold accumulates entries across ticks" {
     var sm = MockStateMachine.init(allocator);
     defer sm.deinit();

@@ -67,6 +67,7 @@ pub const MultiRaftConfig = struct {
     group_drive_budget: usize = 64,
     priority_poll_budget: usize = 64,
     group_operation_budget: usize = 64,
+    snapshot_budget: usize = 1,
     max_groups: usize = 1024,
     max_group_inbox_messages: usize = 4096,
     max_queued_group_operations: usize = 256,
@@ -104,6 +105,9 @@ pub const MultiRaftGroupStatus = struct {
     error_iterations: u64,
     last_host_iteration: u64,
     priority_polls: u64,
+    snapshot_attempts: u64,
+    snapshot_successes: u64,
+    snapshot_failures: u64,
 };
 
 pub const MultiRaftHostStatus = struct {
@@ -128,12 +132,16 @@ pub const MultiRaftHostStatus = struct {
     envelopes_routed: u64,
     peer_events_routed: u64,
     wake_queue_drops: u64,
+    snapshot_attempts: u64,
+    snapshot_successes: u64,
+    snapshot_failures: u64,
 };
 
 pub const GroupOperationKind = enum {
     add,
     remove,
     restart,
+    snapshot,
 };
 
 pub const GroupOperationResult = struct {
@@ -171,12 +179,17 @@ const GroupOperationCommand = union(GroupOperationKind) {
         state_machine: StateMachine,
         callback: GroupOperationCallback,
     },
+    snapshot: struct {
+        group_id: GroupId,
+        callback: GroupOperationCallback,
+    },
 
     fn groupId(self: GroupOperationCommand) GroupId {
         return switch (self) {
             .add => |value| value.config.value.group_id,
             .remove => |value| value.group_id,
             .restart => |value| value.config.value.group_id,
+            .snapshot => |value| value.group_id,
         };
     }
 
@@ -185,6 +198,7 @@ const GroupOperationCommand = union(GroupOperationKind) {
             .add => |value| value.callback,
             .remove => |value| value.callback,
             .restart => |value| value.callback,
+            .snapshot => |value| value.callback,
         };
     }
 
@@ -192,7 +206,7 @@ const GroupOperationCommand = union(GroupOperationKind) {
         switch (self.*) {
             .add => |*value| value.config.deinit(allocator),
             .restart => |*value| value.config.deinit(allocator),
-            .remove => {},
+            .remove, .snapshot => {},
         }
     }
 };
@@ -516,6 +530,9 @@ const Group = struct {
     error_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     last_host_iteration: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     priority_polls: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    snapshot_attempts: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    snapshot_successes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    snapshot_failures: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     wake_queued: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     allocator: std.mem.Allocator,
 
@@ -562,6 +579,7 @@ const Group = struct {
         var config = self.config.value.raftor;
         config.data_dir = if (data_dir) |path| path else "";
         config.file_system = host_config.file_system;
+        config.auto_snapshot_on_tick = false;
         self.raftor = try Raftor.createWithTransport(
             allocator,
             config,
@@ -628,6 +646,15 @@ const Group = struct {
     fn recordError(self: *Group) void {
         _ = self.error_iterations.fetchAdd(1, .monotonic);
     }
+
+    fn recordSnapshot(self: *Group, succeeded: bool) void {
+        _ = self.snapshot_attempts.fetchAdd(1, .monotonic);
+        if (succeeded) {
+            _ = self.snapshot_successes.fetchAdd(1, .monotonic);
+        } else {
+            _ = self.snapshot_failures.fetchAdd(1, .monotonic);
+        }
+    }
 };
 
 fn makeGroupStatus(group: *Group) MultiRaftGroupStatus {
@@ -644,6 +671,9 @@ fn makeGroupStatus(group: *Group) MultiRaftGroupStatus {
         .error_iterations = group.error_iterations.load(.acquire),
         .last_host_iteration = group.last_host_iteration.load(.acquire),
         .priority_polls = group.priority_polls.load(.acquire),
+        .snapshot_attempts = group.snapshot_attempts.load(.acquire),
+        .snapshot_successes = group.snapshot_successes.load(.acquire),
+        .snapshot_failures = group.snapshot_failures.load(.acquire),
     };
 }
 
@@ -665,6 +695,7 @@ pub const MultiRaftHost = struct {
     stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     stopped: bool = false,
     round_robin_cursor: usize = 0,
+    snapshot_cursor: usize = 0,
     unknown_group_messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     host_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     tick_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -678,6 +709,9 @@ pub const MultiRaftHost = struct {
     envelopes_routed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     peer_events_routed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     wake_queue_drops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    snapshot_attempts: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    snapshot_successes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    snapshot_failures: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -789,6 +823,19 @@ pub const MultiRaftHost = struct {
     ) Error!void {
         if (group_id == 0) return error.InvalidGroupId;
         try self.enqueueGroupOperation(.{ .remove = .{
+            .group_id = group_id,
+            .callback = callback,
+        } }, 0);
+    }
+
+    /// Queue a manual snapshot for one group.
+    pub fn requestSnapshot(
+        self: *MultiRaftHost,
+        group_id: GroupId,
+        callback: GroupOperationCallback,
+    ) Error!void {
+        if (group_id == 0) return error.InvalidGroupId;
+        try self.enqueueGroupOperation(.{ .snapshot = .{
             .group_id = group_id,
             .callback = callback,
         } }, 0);
@@ -972,6 +1019,9 @@ pub const MultiRaftHost = struct {
             .envelopes_routed = self.envelopes_routed.load(.acquire),
             .peer_events_routed = self.peer_events_routed.load(.acquire),
             .wake_queue_drops = self.wake_queue_drops.load(.acquire),
+            .snapshot_attempts = self.snapshot_attempts.load(.acquire),
+            .snapshot_successes = self.snapshot_successes.load(.acquire),
+            .snapshot_failures = self.snapshot_failures.load(.acquire),
         };
         const mutex = @constCast(&self.groups_mutex);
         spinLock(mutex);
@@ -1053,6 +1103,7 @@ pub const MultiRaftHost = struct {
         if (self.group_ids.items.len != 0) {
             self.round_robin_cursor = (self.round_robin_cursor + drive_count) % self.group_ids.items.len;
         }
+        if (advance_clock and self.driveAutomaticSnapshots()) had_work = true;
         if (first_error) |err| return err;
         return had_work;
     }
@@ -1092,6 +1143,38 @@ pub const MultiRaftHost = struct {
         }
     }
 
+    fn driveAutomaticSnapshots(self: *MultiRaftHost) bool {
+        if (self.config.snapshot_budget == 0 or self.group_ids.items.len == 0) return false;
+        const group_count = self.group_ids.items.len;
+        var inspected: usize = 0;
+        var attempts: usize = 0;
+        var had_work = false;
+        while (inspected < group_count and attempts < self.config.snapshot_budget) : (inspected += 1) {
+            const index = (self.snapshot_cursor + inspected) % group_count;
+            const group = self.groups.get(self.group_ids.items[index]).?;
+            const status = group.lifecycleSnapshot();
+            if (status.lifecycle == .terminal or status.lifecycle == .stopping) continue;
+            const snapshot = group.raftor.takeAutomaticSnapshotIfDue();
+            if (snapshot) |taken| {
+                if (!taken) continue;
+                attempts += 1;
+                had_work = true;
+                group.recordSnapshot(true);
+                _ = self.snapshot_attempts.fetchAdd(1, .monotonic);
+                _ = self.snapshot_successes.fetchAdd(1, .monotonic);
+            } else |err| {
+                attempts += 1;
+                had_work = true;
+                group.recordSnapshot(false);
+                _ = self.snapshot_attempts.fetchAdd(1, .monotonic);
+                _ = self.snapshot_failures.fetchAdd(1, .monotonic);
+                log.warn(@src(), "group {} automatic snapshot failed: {s}", .{ group.id, @errorName(err) });
+            }
+        }
+        self.snapshot_cursor = (self.snapshot_cursor + inspected) % group_count;
+        return had_work;
+    }
+
     fn processGroupOperations(self: *MultiRaftHost) bool {
         var had_work = false;
         for (0..self.config.group_operation_budget) |_| {
@@ -1103,6 +1186,7 @@ pub const MultiRaftHost = struct {
                 .add => |*value| if (self.addGroupOwned(&value.config, value.state_machine)) |_| null else |err| err,
                 .remove => |value| if (self.removeGroupInternal(value.group_id)) |_| null else |err| err,
                 .restart => |*value| if (self.restartGroupOwned(&value.config, value.state_machine)) |_| null else |err| err,
+                .snapshot => |value| if (self.takeGroupSnapshot(value.group_id)) |_| null else |err| err,
             };
             _ = self.group_operations_completed.fetchAdd(1, .monotonic);
             if (operation_error != null) _ = self.group_operations_failed.fetchAdd(1, .monotonic);
@@ -1186,12 +1270,35 @@ pub const MultiRaftHost = struct {
                 _ = self.group_ids.orderedRemove(index);
                 if (self.group_ids.items.len == 0) {
                     self.round_robin_cursor = 0;
-                } else if (self.round_robin_cursor >= self.group_ids.items.len) {
-                    self.round_robin_cursor %= self.group_ids.items.len;
+                    self.snapshot_cursor = 0;
+                } else {
+                    if (self.round_robin_cursor >= self.group_ids.items.len) {
+                        self.round_robin_cursor %= self.group_ids.items.len;
+                    }
+                    if (self.snapshot_cursor >= self.group_ids.items.len) {
+                        self.snapshot_cursor %= self.group_ids.items.len;
+                    }
                 }
                 return;
             }
         }
+    }
+
+    fn takeGroupSnapshot(self: *MultiRaftHost, group_id: GroupId) Error!void {
+        spinLock(&self.groups_mutex);
+        const group = self.groups.get(group_id) orelse {
+            self.groups_mutex.unlock();
+            return error.GroupNotFound;
+        };
+        self.groups_mutex.unlock();
+        _ = self.snapshot_attempts.fetchAdd(1, .monotonic);
+        group.raftor.takeSnapshot() catch |err| {
+            group.recordSnapshot(false);
+            _ = self.snapshot_failures.fetchAdd(1, .monotonic);
+            return err;
+        };
+        group.recordSnapshot(true);
+        _ = self.snapshot_successes.fetchAdd(1, .monotonic);
     }
 
     fn requestGroupWake(self: *MultiRaftHost, group: *Group) void {

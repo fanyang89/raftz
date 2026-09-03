@@ -120,6 +120,26 @@ snapshot for the full registry; the caller owns the returned slice. Metrics are
 monotonic process-lifetime counters and snapshots may span adjacent event-loop
 operations rather than one global transaction.
 
+## Snapshot Scheduling
+
+`MultiRaftHost` disables per-Raftor end-of-tick snapshot execution and applies a
+host-wide `snapshot_budget` instead. Due groups are inspected from a separate
+round-robin cursor, so one group cannot consume every automatic snapshot slot.
+The original per-group entry threshold, interval, and retry-rate settings remain
+in effect. A zero host budget disables automatic snapshots without changing
+manual snapshots.
+
+`requestSnapshot(group_id, callback)` queues a manual snapshot on the host event
+loop and reports it as the `snapshot` operation kind. Host and group status
+include snapshot attempts, successes, and failures. An automatic snapshot error
+is logged and counted but does not stop the group or prevent another group from
+using the next snapshot slot.
+
+Snapshot creation and persistence remain synchronous on the cooperative event
+thread. The budget bounds how many snapshots start in one iteration; applications
+must still keep StateMachine snapshot work bounded or provide suitably sparse
+thresholds.
+
 ## Shared Transport
 
 `MultiTransport` is parallel to the existing single-group `Transport`. Its

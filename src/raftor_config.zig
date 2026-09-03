@@ -75,6 +75,9 @@ pub const RaftorConfig = struct {
     snapshot_interval_ticks: u64 = 0,
     /// Minimum ticks between snapshot retry attempts (rate limiting).
     snapshot_retry_min_ticks: u64 = 10,
+    /// Run automatic snapshot checks at the end of each Raftor tick.
+    /// MultiRaftHost disables this and applies a host-wide snapshot budget.
+    auto_snapshot_on_tick: bool = true,
     /// Whether to verify CRC32C entry checksums on apply.
     checksum_enabled: bool = false,
     /// Stage Ready writes in the event loop and group their durability sync.
@@ -106,6 +109,7 @@ test "raftor config defaults" {
     try std.testing.expectEqual(@as(usize, 256), c.max_queued_read_indexes);
     try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), c.max_queued_read_index_bytes);
     try std.testing.expectEqual(@as(u64, 10_000), c.snapshot_entries_threshold);
+    try std.testing.expect(c.auto_snapshot_on_tick);
     try std.testing.expect(!c.async_ready);
     try std.testing.expectEqual(@as(usize, 16), c.async_ready_max_inflight);
     try std.testing.expectEqual(@as(usize, 0), c.initial_peers.len);

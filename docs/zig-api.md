@@ -23,9 +23,11 @@ nonzero group ID and a normal Raft `Message`.
 
 A host with a non-empty `data_dir` owns each group's WAL under
 `<data_dir>/groups/<group_id>`. `addGroup` and `removeGroup` manage a stopped
-host. `requestAddGroup`, `requestRemoveGroup`, and `requestRestartGroup` enqueue
-bounded runtime operations and report completion through
-`GroupOperationCallback`. `getHostStatus`, `getStatus`, and
+host. `requestAddGroup`, `requestRemoveGroup`, `requestRestartGroup`, and
+`requestSnapshot` enqueue bounded runtime operations and report completion
+through `GroupOperationCallback`. Automatic snapshots use the host-wide
+`snapshot_budget` while retaining each group's thresholds and retry limits.
+`getHostStatus`, `getStatus`, and
 `listGroupStatuses` expose lock-safe host, scheduler, queue, and per-group
 snapshots. `propose` and `readIndex` route directly to the selected group;
 unknown IDs return `GroupNotFound`. See

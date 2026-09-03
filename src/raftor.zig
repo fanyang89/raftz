@@ -1037,47 +1037,48 @@ pub const Raftor = struct {
         self.last_snapshot_attempt_tick = self.tick_count;
     }
 
-    /// Check if a snapshot should be automatically triggered based on the
-    /// configured thresholds. Called at the end of each `tick()`.
-    fn maybeAutoSnapshot(self: *Raftor) Error!void {
+    /// Apply one automatic snapshot when its configured threshold is due.
+    pub fn takeAutomaticSnapshotIfDue(self: *Raftor) Error!bool {
+        try self.enterEventLoop();
+        defer self.leaveEventLoop();
+        if (self.driverError()) |err| return err;
+        return self.takeAutomaticSnapshotIfDueImpl();
+    }
+
+    fn takeAutomaticSnapshotIfDueImpl(self: *Raftor) Error!bool {
+        if (!self.automaticSnapshotDue()) return false;
+        const applied_index = self.ready_processor.getAppliedIndex();
+        self.last_snapshot_attempt_index = applied_index;
+        self.last_snapshot_attempt_tick = self.tick_count;
+        try self.takeSnapshotImpl();
+        return true;
+    }
+
+    fn automaticSnapshotDue(self: *const Raftor) bool {
         const cfg = self.config;
         const entries_threshold = cfg.snapshot_entries_threshold;
         const interval_ticks = cfg.snapshot_interval_ticks;
-
-        // Both zero → auto-snapshot disabled.
-        if (entries_threshold == 0 and interval_ticks == 0) return;
+        if (entries_threshold == 0 and interval_ticks == 0) return false;
 
         const applied_index = self.ready_processor.getAppliedIndex();
-        if (applied_index == 0) return;
-
-        // Rate limiting: if applied_index hasn't advanced and we tried
-        // recently, skip.
+        if (applied_index == 0) return false;
         if (applied_index <= self.last_snapshot_attempt_index and
             (self.tick_count - self.last_snapshot_attempt_tick) < cfg.snapshot_retry_min_ticks)
         {
-            return;
+            return false;
         }
 
-        // Condition 1: entry count threshold.
-        const snapshot_index = self.last_snapshot_index;
-        if (entries_threshold > 0 and applied_index > snapshot_index and
-            (applied_index - snapshot_index) >= entries_threshold)
-        {
-            self.last_snapshot_attempt_index = applied_index;
-            self.last_snapshot_attempt_tick = self.tick_count;
-            try self.takeSnapshotImpl();
-            return;
-        }
+        const entries_due = entries_threshold > 0 and
+            applied_index > self.last_snapshot_index and
+            (applied_index - self.last_snapshot_index) >= entries_threshold;
+        const interval_due = interval_ticks > 0 and
+            (self.tick_count - self.last_snapshot_tick) >= interval_ticks;
+        return entries_due or interval_due;
+    }
 
-        // Condition 2: time interval.
-        if (interval_ticks > 0 and
-            (self.tick_count - self.last_snapshot_tick) >= interval_ticks)
-        {
-            self.last_snapshot_attempt_index = applied_index;
-            self.last_snapshot_attempt_tick = self.tick_count;
-            try self.takeSnapshotImpl();
-            return;
-        }
+    fn maybeAutoSnapshot(self: *Raftor) Error!void {
+        if (!self.config.auto_snapshot_on_tick) return;
+        _ = try self.takeAutomaticSnapshotIfDueImpl();
     }
 
     // -----------------------------------------------------------------------

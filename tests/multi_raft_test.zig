@@ -6,6 +6,7 @@ const allocator = std.testing.allocator;
 const FailingStateMachine = struct {
     inner: *raft.MockStateMachine,
     fail_data: []const u8,
+    fail_snapshot: bool = false,
 
     fn apply(ctx: *anyopaque, entry: raft.Entry) raft.Error!raft.ApplyResult {
         const self: *FailingStateMachine = @ptrCast(@alignCast(ctx));
@@ -21,6 +22,7 @@ const FailingStateMachine = struct {
         conf_state: raft.ConfState,
     ) raft.Error!raft.Snapshot {
         const self: *FailingStateMachine = @ptrCast(@alignCast(ctx));
+        if (self.fail_snapshot) return error.OutOfMemory;
         return raft.MockStateMachine.takeSnapshotImpl(
             self.inner,
             test_allocator,
@@ -388,6 +390,104 @@ test "multi raft: pending envelope metrics follow round-robin delivery" {
     _ = try host.poll();
     try std.testing.expectEqual(@as(usize, 0), host.getStatus(20).?.pending_messages);
     try std.testing.expectEqual(@as(u64, 2), host.getHostStatus().poll_iterations);
+}
+
+test "multi raft: host snapshot budget schedules groups fairly" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    const host = try raft.MultiRaftHost.create(allocator, .{
+        .node_id = 1,
+        .snapshot_budget = 1,
+    }, transport.transport());
+    defer host.destroy();
+    var first_machine = raft.MockStateMachine.init(allocator);
+    defer first_machine.deinit();
+    var second_machine = raft.MockStateMachine.init(allocator);
+    defer second_machine.deinit();
+    var first_config = groupConfig(70, 1, &.{});
+    first_config.raftor.snapshot_entries_threshold = 1;
+    var second_config = groupConfig(80, 1, &.{});
+    second_config.raftor.snapshot_entries_threshold = 1;
+    try host.addGroup(first_config, first_machine.stateMachine());
+    try host.addGroup(second_config, second_machine.stateMachine());
+    try host.campaign(70);
+    try host.campaign(80);
+    var first = ProposalResult{};
+    var second = ProposalResult{};
+    try host.propose(70, "first", first.callback());
+    try host.propose(80, "second", second.callback());
+
+    _ = try host.tick();
+    try std.testing.expectEqual(@as(usize, 1), first_machine.snapshot_count + second_machine.snapshot_count);
+    _ = try host.tick();
+    try std.testing.expectEqual(@as(usize, 2), first_machine.snapshot_count + second_machine.snapshot_count);
+    const status = host.getHostStatus();
+    try std.testing.expectEqual(@as(u64, 2), status.snapshot_attempts);
+    try std.testing.expectEqual(@as(u64, 2), status.snapshot_successes);
+    try std.testing.expectEqual(@as(u64, 0), status.snapshot_failures);
+}
+
+test "multi raft: automatic snapshot failure does not block other groups" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    const host = try raft.MultiRaftHost.create(allocator, .{
+        .node_id = 1,
+        .snapshot_budget = 1,
+    }, transport.transport());
+    defer host.destroy();
+    var failed_inner = raft.MockStateMachine.init(allocator);
+    defer failed_inner.deinit();
+    var failed_machine = FailingStateMachine{
+        .inner = &failed_inner,
+        .fail_data = "unused",
+        .fail_snapshot = true,
+    };
+    var healthy_machine = raft.MockStateMachine.init(allocator);
+    defer healthy_machine.deinit();
+    var failed_config = groupConfig(71, 1, &.{});
+    failed_config.raftor.snapshot_entries_threshold = 1;
+    failed_config.raftor.snapshot_retry_min_ticks = 0;
+    var healthy_config = groupConfig(81, 1, &.{});
+    healthy_config.raftor.snapshot_entries_threshold = 1;
+    healthy_config.raftor.snapshot_retry_min_ticks = 0;
+    try host.addGroup(failed_config, failed_machine.stateMachine());
+    try host.addGroup(healthy_config, healthy_machine.stateMachine());
+    try host.campaign(71);
+    try host.campaign(81);
+
+    _ = try host.tick();
+    try std.testing.expectEqual(@as(u64, 1), host.getHostStatus().snapshot_failures);
+    try std.testing.expectEqual(raft.MultiRaftGroupLifecycle.active, host.getStatus(71).?.lifecycle);
+    _ = try host.tick();
+    try std.testing.expectEqual(@as(usize, 1), healthy_machine.snapshot_count);
+    try std.testing.expectEqual(@as(u64, 1), host.getHostStatus().snapshot_successes);
+}
+
+test "multi raft: runtime manual snapshot completes through operation callback" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    const host = try raft.MultiRaftHost.create(allocator, .{ .node_id = 1 }, transport.transport());
+    defer host.destroy();
+    var machine = raft.MockStateMachine.init(allocator);
+    defer machine.deinit();
+    try host.addGroup(groupConfig(90, 1, &.{}), machine.stateMachine());
+    try host.campaign(90);
+    var proposal = ProposalResult{};
+    try host.propose(90, "snapshot", proposal.callback());
+    try drive(&.{host}, 3);
+    try std.testing.expect(proposal.completed);
+
+    var captured = GroupOperationCapture{};
+    try host.requestSnapshot(90, captured.callback());
+    _ = try host.poll();
+    try std.testing.expect(captured.completed.load(.acquire));
+    try std.testing.expectEqual(raft.GroupOperationKind.snapshot, captured.result.operation);
+    try std.testing.expect(captured.result.err == null);
+    try std.testing.expectEqual(@as(usize, 1), machine.snapshot_count);
+    try std.testing.expectEqual(@as(u64, 1), host.getStatus(90).?.snapshot_successes);
 }
 
 test "multi raft: terminal group failure does not stop healthy groups" {
