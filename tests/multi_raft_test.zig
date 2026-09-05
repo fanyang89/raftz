@@ -61,6 +61,26 @@ const FailingStateMachine = struct {
     };
 };
 
+const TestGroupPreparer = struct {
+    config: raft.MultiRaftGroupConfig,
+    state_machine: raft.StateMachine,
+    expected_source: u64,
+    calls: usize = 0,
+
+    fn prepare(ctx: *anyopaque, request: raft.GroupPreparationRequest) raft.Error!raft.PreparedGroup {
+        const self: *TestGroupPreparer = @ptrCast(@alignCast(ctx));
+        if (request.group_id != self.config.group_id or request.from_node_id != self.expected_source) {
+            return error.GroupNotFound;
+        }
+        self.calls += 1;
+        return .{ .config = self.config, .state_machine = self.state_machine };
+    }
+
+    fn preparer(self: *TestGroupPreparer) raft.GroupPreparer {
+        return .{ .ctx = self, .function = prepare };
+    }
+};
+
 const GroupOperationCapture = struct {
     completed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     result: raft.GroupOperationResult = undefined,
@@ -157,6 +177,9 @@ test "multi raft: validates priority wake configuration" {
     config.priority_poll_budget = 0;
     try config.validate();
     config.migration_step_budget = 0;
+    try std.testing.expectError(error.InvalidConfig, config.validate());
+    config.migration_step_budget = 1;
+    config.group_preparation_budget = 0;
     try std.testing.expectError(error.InvalidConfig, config.validate());
 }
 
@@ -564,7 +587,12 @@ test "multi raft: online replica migration replaces a voter" {
     joining_config.raftor.cluster_id = cluster_id;
     joining_config.raftor.listen_addr = "node-3";
     joining_config.raftor.join = true;
-    try host_three.addGroup(joining_config, machine_three.stateMachine());
+    var preparer = TestGroupPreparer{
+        .config = joining_config,
+        .state_machine = machine_three.stateMachine(),
+        .expected_source = 1,
+    };
+    try host_three.setGroupPreparer(preparer.preparer());
     try host_one.campaign(95);
     try drive(&.{ host_one, host_two, host_three }, 20);
 
@@ -584,6 +612,12 @@ test "multi raft: online replica migration replaces a voter" {
 
     try std.testing.expect(migration.completed);
     try std.testing.expect(migration.result.err == null);
+    try std.testing.expectEqual(@as(usize, 1), preparer.calls);
+    try std.testing.expect(host_three.getStatus(95).?.auto_prepared);
+    const target_status = host_three.getHostStatus();
+    try std.testing.expectEqual(@as(u64, 1), target_status.group_preparation_attempts);
+    try std.testing.expectEqual(@as(u64, 1), target_status.group_preparation_successes);
+    try std.testing.expectEqual(@as(u64, 0), target_status.group_preparation_failures);
     try std.testing.expect(host_one.getReplicaMigrationStatus(95) == null);
     const status = host_one.getHostStatus();
     try std.testing.expectEqual(@as(u64, 1), status.replica_migrations_started);
@@ -1062,6 +1096,45 @@ test "multi raft: migration status and cancellation are thread safe" {
     host.stop();
     thread.join();
     try std.testing.expect(run_state.err == null);
+}
+
+test "multi raft: invalid automatic Group preparation is isolated" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const source = try network.createTransport(1);
+    const target = try network.createTransport(2);
+    const host = try raft.MultiRaftHost.create(allocator, .{
+        .node_id = 2,
+        .group_preparation_budget = 1,
+    }, target.transport());
+    defer host.destroy();
+    var machine = raft.MockStateMachine.init(allocator);
+    defer machine.deinit();
+    var preparer = TestGroupPreparer{
+        .config = groupConfig(104, 2, &.{}),
+        .state_machine = machine.stateMachine(),
+        .expected_source = 1,
+    };
+    try host.setGroupPreparer(preparer.preparer());
+    try source.transport().send(&.{
+        .{
+            .group_id = 104,
+            .message = .{ .msg_type = .heartbeat, .from = 1, .to = 2 },
+        },
+        .{
+            .group_id = 104,
+            .message = .{ .msg_type = .heartbeat, .from = 1, .to = 2 },
+        },
+    });
+
+    try std.testing.expect(try host.poll());
+    try std.testing.expectEqual(@as(usize, 0), host.groupCount());
+    try std.testing.expectEqual(@as(usize, 2), host.unknownGroupMessageCount());
+    try std.testing.expectEqual(@as(usize, 1), preparer.calls);
+    const status = host.getHostStatus();
+    try std.testing.expectEqual(@as(u64, 1), status.group_preparation_attempts);
+    try std.testing.expectEqual(@as(u64, 0), status.group_preparation_successes);
+    try std.testing.expectEqual(@as(u64, 2), status.group_preparation_failures);
 }
 
 test "multi raft: unknown group envelopes are isolated" {

@@ -111,9 +111,11 @@ event loop. Generation-qualified wake hints reduce ingress latency without
 stealing the fair round-robin clock budget. A separate fair cursor and host-wide
 budget serialize due group snapshots. An in-memory migration coordinator drives
 learner catch-up, voter promotion, leader handoff, and source removal through
-committed Raft configuration changes. Durable Hosts journal migration intent
-with atomic replacement and recover it after restart. Hosts stop locally retired
-Groups only after previously observing their local node in that Group's
+committed Raft configuration changes. An opt-in target-side Group factory turns
+the first authorized unknown-group envelope into a validated join-mode Group;
+Raft catch-up provides readiness confirmation. Durable Hosts journal migration
+intent with atomic replacement and recover it after restart. Hosts stop locally
+retired Groups only after previously observing their local node in that Group's
 membership. Atomic counters and registry locks expose host and per-group status
 without moving Raft mutation off
 the event thread. Terminal

@@ -72,6 +72,7 @@ pub const MultiRaftConfig = struct {
     group_operation_budget: usize = 64,
     snapshot_budget: usize = 1,
     migration_step_budget: usize = 16,
+    group_preparation_budget: usize = 4,
     max_active_migrations: usize = 64,
     max_replica_migration_address_bytes: usize = 4096,
     max_groups: usize = 1024,
@@ -84,7 +85,8 @@ pub const MultiRaftConfig = struct {
         if (self.node_id == 0) return error.InvalidNodeId;
         if (self.tick_interval_ms == 0 or self.transport_poll_budget == 0) return error.InvalidConfig;
         if (self.group_drive_budget == 0 or self.group_operation_budget == 0) return error.InvalidConfig;
-        if (self.migration_step_budget == 0 or self.max_active_migrations == 0) return error.InvalidConfig;
+        if (self.migration_step_budget == 0 or self.group_preparation_budget == 0) return error.InvalidConfig;
+        if (self.max_active_migrations == 0) return error.InvalidConfig;
         if (self.max_replica_migration_address_bytes == 0) return error.InvalidConfig;
         if (self.priority_poll_budget > 0 and self.max_queued_group_wakes == 0) return error.InvalidConfig;
         if (self.max_groups == 0 or self.max_group_inbox_messages == 0) return error.InvalidConfig;
@@ -117,6 +119,7 @@ pub const MultiRaftGroupStatus = struct {
     snapshot_successes: u64,
     snapshot_failures: u64,
     locally_retired: bool,
+    auto_prepared: bool,
 };
 
 pub const MultiRaftHostStatus = struct {
@@ -153,6 +156,28 @@ pub const MultiRaftHostStatus = struct {
     replica_migrations_cancelled: u64,
     replica_migration_leader_transfers: u64,
     local_group_retirements: u64,
+    group_preparation_attempts: u64,
+    group_preparation_successes: u64,
+    group_preparation_failures: u64,
+};
+
+pub const GroupPreparationRequest = struct {
+    group_id: GroupId,
+    from_node_id: u64,
+};
+
+pub const PreparedGroup = struct {
+    config: MultiRaftGroupConfig,
+    state_machine: StateMachine,
+};
+
+pub const GroupPreparer = struct {
+    ctx: *anyopaque,
+    function: *const fn (ctx: *anyopaque, request: GroupPreparationRequest) Error!PreparedGroup,
+
+    pub fn prepare(self: GroupPreparer, request: GroupPreparationRequest) Error!PreparedGroup {
+        return self.function(self.ctx, request);
+    }
 };
 
 pub const ReplicaMigrationRequest = struct {
@@ -706,6 +731,7 @@ const Group = struct {
     snapshot_failures: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     local_membership_seen: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     locally_retired: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    auto_prepared: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_queued: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     allocator: std.mem.Allocator,
 
@@ -862,6 +888,7 @@ fn makeGroupStatus(group: *Group) MultiRaftGroupStatus {
         .snapshot_successes = group.snapshot_successes.load(.acquire),
         .snapshot_failures = group.snapshot_failures.load(.acquire),
         .locally_retired = group.locally_retired.load(.acquire),
+        .auto_prepared = group.auto_prepared.load(.acquire),
     };
 }
 
@@ -877,6 +904,8 @@ pub const MultiRaftHost = struct {
     replica_migrations: std.AutoHashMap(GroupId, *ReplicaMigration),
     recovered_replica_migrations: std.AutoHashMap(GroupId, MigrationIntent),
     migration_store: ?MigrationIntentStore,
+    group_preparer: ?GroupPreparer = null,
+    group_preparer_mutex: std.atomic.Mutex = .unlocked,
     replica_migration_ids: std.ArrayList(GroupId) = .empty,
     replica_migrations_mutex: std.atomic.Mutex = .unlocked,
     next_group_generation: u64 = 0,
@@ -890,6 +919,7 @@ pub const MultiRaftHost = struct {
     round_robin_cursor: usize = 0,
     snapshot_cursor: usize = 0,
     migration_cursor: usize = 0,
+    group_preparations_remaining: usize = 0,
     unknown_group_messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     host_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     tick_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -913,6 +943,9 @@ pub const MultiRaftHost = struct {
     replica_migrations_cancelled: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     replica_migration_leader_transfers: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     local_group_retirements: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    group_preparation_attempts: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    group_preparation_successes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    group_preparation_failures: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -1038,6 +1071,20 @@ pub const MultiRaftHost = struct {
         try self.enterManagement();
         defer self.leaveManagement();
         try self.removeGroupInternal(group_id);
+    }
+
+    /// Install an opt-in factory for Raft envelopes addressed to unknown Groups.
+    /// This must be configured while the Host event loop is stopped.
+    pub fn setGroupPreparer(self: *MultiRaftHost, preparer: ?GroupPreparer) Error!void {
+        spinLock(&self.lifecycle_mutex);
+        defer self.lifecycle_mutex.unlock();
+        if (self.stopped) return error.ShuttingDown;
+        if (self.run_active.load(.acquire) or self.event_loop_active.load(.acquire)) {
+            return error.EventLoopBusy;
+        }
+        spinLock(&self.group_preparer_mutex);
+        defer self.group_preparer_mutex.unlock();
+        self.group_preparer = preparer;
     }
 
     /// Queue a group creation for the host event-loop thread.
@@ -1407,6 +1454,9 @@ pub const MultiRaftHost = struct {
             .replica_migrations_cancelled = self.replica_migrations_cancelled.load(.acquire),
             .replica_migration_leader_transfers = self.replica_migration_leader_transfers.load(.acquire),
             .local_group_retirements = self.local_group_retirements.load(.acquire),
+            .group_preparation_attempts = self.group_preparation_attempts.load(.acquire),
+            .group_preparation_successes = self.group_preparation_successes.load(.acquire),
+            .group_preparation_failures = self.group_preparation_failures.load(.acquire),
         };
         const mutex = @constCast(&self.groups_mutex);
         spinLock(mutex);
@@ -1453,6 +1503,7 @@ pub const MultiRaftHost = struct {
         }
         var had_work = self.processGroupOperations();
         if (self.stop_requested.load(.acquire)) return had_work;
+        self.group_preparations_remaining = self.config.group_preparation_budget;
         for (0..self.config.transport_poll_budget) |_| {
             if (!try self.transport.pollOne()) break;
             had_work = true;
@@ -2074,15 +2125,76 @@ pub const MultiRaftHost = struct {
 
     fn onEnvelope(ctx: *anyopaque, envelope: Envelope) Error!void {
         const self: *MultiRaftHost = @ptrCast(@alignCast(ctx));
-        const group = self.groups.get(envelope.group_id) orelse {
+        const group = self.groups.get(envelope.group_id) orelse self.prepareUnknownGroup(
+            envelope.group_id,
+            envelope.message.from,
+        ) catch |err| {
             var owned = envelope;
             owned.deinit(self.allocator);
             _ = self.unknown_group_messages.fetchAdd(1, .monotonic);
+            if (err != error.GroupNotFound) {
+                _ = self.group_preparation_failures.fetchAdd(1, .monotonic);
+                log.warn(
+                    @src(),
+                    "group {} preparation from node {} failed: {s}",
+                    .{ envelope.group_id, envelope.message.from, @errorName(err) },
+                );
+            }
             return;
         };
         try group.transport.enqueueMessage(envelope.message);
         self.requestGroupWake(group);
         _ = self.envelopes_routed.fetchAdd(1, .monotonic);
+    }
+
+    fn prepareUnknownGroup(
+        self: *MultiRaftHost,
+        group_id: GroupId,
+        from_node_id: u64,
+    ) Error!*Group {
+        if (group_id == 0) return error.InvalidGroupId;
+        if (from_node_id == 0) return error.InvalidNodeId;
+        spinLock(&self.group_preparer_mutex);
+        const preparer = self.group_preparer orelse {
+            self.group_preparer_mutex.unlock();
+            return error.GroupNotFound;
+        };
+        if (self.group_preparations_remaining == 0) {
+            self.group_preparer_mutex.unlock();
+            return error.GroupOperationBackpressure;
+        }
+        self.group_preparations_remaining -= 1;
+        _ = self.group_preparation_attempts.fetchAdd(1, .monotonic);
+        const prepared = preparer.prepare(.{
+            .group_id = group_id,
+            .from_node_id = from_node_id,
+        }) catch |err| {
+            self.group_preparer_mutex.unlock();
+            return err;
+        };
+        if (prepared.config.group_id != group_id or
+            prepared.config.raftor.nodeId() != self.config.node_id or
+            !prepared.config.raftor.join)
+        {
+            self.group_preparer_mutex.unlock();
+            return error.InvalidConfig;
+        }
+        self.validateGroupConfig(prepared.config) catch |err| {
+            self.group_preparer_mutex.unlock();
+            return err;
+        };
+        var owned = OwnedGroupConfig.clone(self.allocator, prepared.config) catch |err| {
+            self.group_preparer_mutex.unlock();
+            return err;
+        };
+        self.group_preparer_mutex.unlock();
+        defer owned.deinit(self.allocator);
+        if (self.stop_requested.load(.acquire)) return error.ShuttingDown;
+        try self.addGroupOwned(&owned, prepared.state_machine);
+        const group = self.groups.get(group_id).?;
+        group.auto_prepared.store(true, .release);
+        _ = self.group_preparation_successes.fetchAdd(1, .monotonic);
+        return group;
     }
 
     fn onPeerEvent(ctx: *anyopaque, event: MultiPeerEvent) Error!void {

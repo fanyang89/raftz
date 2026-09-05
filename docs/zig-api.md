@@ -32,8 +32,10 @@ leader handoff, and source removal; `getReplicaMigrationStatus` and
 `cancelReplicaMigration` expose its active lifecycle. Durable Hosts persist the
 intent under their data directory. After restart,
 `getRecoveredReplicaMigrationStatus` and `resumeReplicaMigration` restore the
-workflow once its Group and callback are available. The target Group must be
-prepared in join mode before migration starts. Hosts automatically stop locally
+workflow once its Group and callback are available. Targets can pre-create a
+join-mode Group or install `GroupPreparer` through `setGroupPreparer`; the first
+unknown-group Raft envelope then creates the validated Group and learner catch-up
+confirms readiness. Hosts automatically stop locally
 retired Groups after a committed removal while preserving their WAL.
 `getHostStatus`, `getStatus`, and
 `listGroupStatuses` expose lock-safe host, scheduler, queue, and per-group

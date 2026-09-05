@@ -152,9 +152,22 @@ current group leader:
 4. re-check voter catch-up stability;
 5. remove the source voter.
 
-The target application must create the same Group in join mode first, with the
-same cluster ID, seed peers, and an appropriate StateMachine. The Host does not
-provide a remote control plane for constructing the target Group.
+The target may be created explicitly in join mode, or the application may
+install an opt-in `GroupPreparer` with `setGroupPreparer`. On the first Raft
+envelope for an unknown Group, the target Host invokes the preparer with the
+Group ID and source node ID. The callback returns a join-mode configuration and
+StateMachine; the Host validates and deep-copies the configuration, creates the
+Group, then delivers the triggering envelope. Normal learner responses and the
+catch-up gate confirm readiness to the migration coordinator.
+
+Preparation failures are isolated to the unknown Group and the triggering
+envelope is dropped for normal Raft retry. Returned Group and local node IDs must
+match, and bootstrap configurations are rejected. The preparer is an application
+control-plane hook, not remote code loading: it must authorize the source, remain
+bounded, avoid calling back into the Host, and keep the returned StateMachine
+alive until Group removal. Host and Group status expose preparation counters and
+whether a Group was automatically prepared. `group_preparation_budget` bounds
+factory attempts per Host iteration in addition to `max_groups`.
 
 `getReplicaMigrationStatus` reports the current stage, elapsed logical ticks,
 replication indexes, and target activity. `cancelReplicaMigration` stops the
