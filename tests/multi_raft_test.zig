@@ -605,6 +605,9 @@ test "multi raft: online replica migration replaces a voter" {
         "after-migration",
         machine_three.applied.items[machine_three.applied.items.len - 1],
     );
+    try std.testing.expectEqual(raft.MultiRaftGroupLifecycle.stopping, host_two.getStatus(95).?.lifecycle);
+    try std.testing.expect(host_two.getStatus(95).?.locally_retired);
+    try std.testing.expectEqual(@as(u64, 1), host_two.getHostStatus().local_group_retirements);
 }
 
 test "multi raft: migrating the local leader stops its retired group" {
@@ -649,6 +652,8 @@ test "multi raft: migrating the local leader stops its retired group" {
 
     try std.testing.expect(migration.completed and migration.result.err == null);
     try std.testing.expectEqual(raft.MultiRaftGroupLifecycle.stopping, host_one.getStatus(94).?.lifecycle);
+    try std.testing.expect(host_one.getStatus(94).?.locally_retired);
+    try std.testing.expectEqual(@as(u64, 1), host_one.getHostStatus().local_group_retirements);
     try host_two.campaign(94);
     try drive(&.{host_two}, 10);
     try std.testing.expectEqual(raft.StateRole.leader, host_two.getStatus(94).?.node.role);

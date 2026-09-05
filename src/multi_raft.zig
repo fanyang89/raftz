@@ -113,6 +113,7 @@ pub const MultiRaftGroupStatus = struct {
     snapshot_attempts: u64,
     snapshot_successes: u64,
     snapshot_failures: u64,
+    locally_retired: bool,
 };
 
 pub const MultiRaftHostStatus = struct {
@@ -146,6 +147,7 @@ pub const MultiRaftHostStatus = struct {
     replica_migrations_failed: u64,
     replica_migrations_timed_out: u64,
     replica_migrations_cancelled: u64,
+    local_group_retirements: u64,
 };
 
 pub const ReplicaMigrationRequest = struct {
@@ -666,6 +668,8 @@ const Group = struct {
     snapshot_attempts: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     snapshot_successes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     snapshot_failures: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    local_membership_seen: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    locally_retired: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_queued: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     allocator: std.mem.Allocator,
 
@@ -719,6 +723,9 @@ const Group = struct {
             state_machine,
             self.transport.transport(),
         );
+        if (self.raftor.getClusterMembership()) |membership| {
+            self.local_membership_seen.store(membership.addressOf(config.nodeId()) != null, .release);
+        }
         return self;
     }
 
@@ -780,6 +787,17 @@ const Group = struct {
         _ = self.error_iterations.fetchAdd(1, .monotonic);
     }
 
+    fn observeLocalMembership(self: *Group) void {
+        const membership = self.raftor.getClusterMembership() orelse return;
+        if (membership.addressOf(self.config.value.raftor.nodeId()) != null) {
+            self.local_membership_seen.store(true, .release);
+            return;
+        }
+        if (self.local_membership_seen.load(.acquire)) {
+            self.locally_retired.store(true, .release);
+        }
+    }
+
     fn recordSnapshot(self: *Group, succeeded: bool) void {
         _ = self.snapshot_attempts.fetchAdd(1, .monotonic);
         if (succeeded) {
@@ -807,6 +825,7 @@ fn makeGroupStatus(group: *Group) MultiRaftGroupStatus {
         .snapshot_attempts = group.snapshot_attempts.load(.acquire),
         .snapshot_successes = group.snapshot_successes.load(.acquire),
         .snapshot_failures = group.snapshot_failures.load(.acquire),
+        .locally_retired = group.locally_retired.load(.acquire),
     };
 }
 
@@ -854,6 +873,7 @@ pub const MultiRaftHost = struct {
     replica_migrations_failed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     replica_migrations_timed_out: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     replica_migrations_cancelled: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    local_group_retirements: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -1248,6 +1268,7 @@ pub const MultiRaftHost = struct {
             .replica_migrations_failed = self.replica_migrations_failed.load(.acquire),
             .replica_migrations_timed_out = self.replica_migrations_timed_out.load(.acquire),
             .replica_migrations_cancelled = self.replica_migrations_cancelled.load(.acquire),
+            .local_group_retirements = self.local_group_retirements.load(.acquire),
         };
         const mutex = @constCast(&self.groups_mutex);
         spinLock(mutex);
@@ -1331,6 +1352,7 @@ pub const MultiRaftHost = struct {
         }
         if (advance_clock and self.driveAutomaticSnapshots()) had_work = true;
         if (self.driveReplicaMigrations(advance_clock)) had_work = true;
+        if (self.stopLocallyRetiredGroups()) had_work = true;
         if (first_error) |err| return err;
         return had_work;
     }
@@ -1356,6 +1378,7 @@ pub const MultiRaftHost = struct {
                 group.recordProductive();
                 _ = self.groups_with_work.fetchAdd(1, .monotonic);
             }
+            group.observeLocalMembership();
             group.markActive();
             return .{ .worked = value };
         } else |err| {
@@ -1620,15 +1643,6 @@ pub const MultiRaftHost = struct {
             }
         } else {
             _ = self.replica_migrations_completed.fetchAdd(1, .monotonic);
-            if (migration.source_node_id == self.config.node_id) {
-                spinLock(&self.groups_mutex);
-                const group = self.groups.get(migration.group_id);
-                self.groups_mutex.unlock();
-                if (group) |selected| {
-                    selected.markStopping();
-                    selected.raftor.stop();
-                }
-            }
         }
         migration.callback.invoke(.{
             .group_id = migration.group_id,
@@ -1670,6 +1684,22 @@ pub const MultiRaftHost = struct {
             const selected = migration orelse return;
             self.finishReplicaMigration(selected, migration_error);
         }
+    }
+
+    fn stopLocallyRetiredGroups(self: *MultiRaftHost) bool {
+        var had_work = false;
+        for (self.group_ids.items) |group_id| {
+            const group = self.groups.get(group_id).?;
+            if (!group.locally_retired.load(.acquire)) continue;
+            const status = group.lifecycleSnapshot();
+            if (status.lifecycle == .terminal or status.lifecycle == .stopping) continue;
+            group.markStopping();
+            _ = group.wake_queued.swap(false, .acq_rel);
+            group.raftor.stop();
+            _ = self.local_group_retirements.fetchAdd(1, .monotonic);
+            had_work = true;
+        }
+        return had_work;
     }
 
     fn processGroupOperations(self: *MultiRaftHost) bool {

@@ -111,8 +111,10 @@ event loop. Generation-qualified wake hints reduce ingress latency without
 stealing the fair round-robin clock budget. A separate fair cursor and host-wide
 budget serialize due group snapshots. An in-memory migration coordinator drives
 learner catch-up, voter promotion, and source removal through committed Raft
-configuration changes. Atomic counters and registry locks expose host and
-per-group status without moving Raft mutation off the event thread. Terminal
+configuration changes. Hosts stop locally retired Groups only after previously
+observing their local node in that Group's membership. Atomic counters and
+registry locks expose host and per-group status without moving Raft mutation off
+the event thread. Terminal
 errors are recorded per group and do not stop healthy groups. See
 [Multi-Raft](multi-raft.md) for the public API and MVP limits.
 

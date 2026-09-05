@@ -167,10 +167,11 @@ learner or voter.
 Migration intent and callbacks are not persisted. After a coordinator restart,
 the application may submit the same intent again; the workflow infers whether
 the target is absent, already a learner, or already a voter. Removing the
-current leader is supported but causes a normal election window. A successful
-local-source migration stops the removed local Group while preserving its WAL.
-When the coordinator replaces a replica on another Host, that Host's application
-remains responsible for stopping the now-retired local Group.
+current leader is supported but causes a normal election window. Every Host
+tracks whether its local node has entered each Group's membership; once a
+committed change later retires that node, the Host stops the local Group while
+preserving its WAL. A join-mode target is not stopped while it is still waiting
+to be added.
 
 `migration_step_budget` and `max_active_migrations` bound coordinator work and
 memory. Host metrics expose active, started, completed, failed, timed-out, and

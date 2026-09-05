@@ -30,7 +30,8 @@ through `GroupOperationCallback`. Automatic snapshots use the host-wide
 `requestReplicaMigration` coordinates learner addition, catch-up, promotion, and
 source removal; `getReplicaMigrationStatus` and `cancelReplicaMigration` expose
 its in-memory lifecycle. The target Group must be prepared in join mode before
-migration starts. `getHostStatus`, `getStatus`, and
+migration starts. Hosts automatically stop locally retired Groups after a
+committed removal while preserving their WAL. `getHostStatus`, `getStatus`, and
 `listGroupStatuses` expose lock-safe host, scheduler, queue, and per-group
 snapshots. `propose` and `readIndex` route directly to the selected group;
 unknown IDs return `GroupNotFound`. See
