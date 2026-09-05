@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run extended deterministic Multi-Raft partition soak"
+set -euo pipefail
+
+export RAFTZ_MULTI_RAFT_SOAK_ROUNDS="${RAFTZ_MULTI_RAFT_SOAK_ROUNDS:-5000}"
+exec zig build test-multi-raft-chaos -Doptimize=ReleaseSafe --summary all "$@"

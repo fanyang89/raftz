@@ -38,6 +38,8 @@ mise run test-libelection
 mise run test-rpc
 mise run test-grpc-raftor
 mise run test-grpc-multi-raft
+mise run test-multi-raft-chaos
+mise run test-multi-raft-soak
 mise run test-raft-sqlite
 mise run test-libelection
 mise run test-upstream
@@ -69,6 +71,12 @@ Override them explicitly with `-Dinvariant-checks=false` or
 
 The deterministic network harness checks election safety, committed-prefix
 agreement, and convergence while varying message delivery and partitions.
+
+`test-multi-raft-chaos` covers group-scoped partitions, quorum failover,
+healing, and durable replica restart/catch-up. Its default soak performs 300
+deterministic proposal/partition rounds. `test-multi-raft-soak` runs the same
+suite in ReleaseSafe with 5,000 rounds; override the duration with
+`RAFTZ_MULTI_RAFT_SOAK_ROUNDS`.
 
 Marionette-backed VOPR tests exercise cluster behavior and filesystem crash
 boundaries:

@@ -256,8 +256,14 @@ Destroy the host before the caller-owned transport. All groups sharing one
 transport must use the same physical cluster identity and consistent addresses
 for each node.
 
-Unknown inbound group IDs are dropped and counted by
-`unknownGroupMessageCount`; they do not fail other groups.
+Unknown inbound group IDs are offered to the optional `GroupPreparer`; declined
+or failed preparations are dropped and counted without failing other groups.
+
+`LoopbackMultiNetwork` provides group-scoped `blockLink`, `partition`,
+`unblockLink`, `healGroup`, and `healAll` controls. `droppedEnvelopeCount`
+exposes deterministic fault activity for partition, recovery, and soak tests.
+Stopped loopback node transports can be replaced with `recreateTransport` to
+exercise durable Host restart and catch-up in one process.
 
 ## Lifecycle
 

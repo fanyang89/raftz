@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Run deterministic Multi-Raft partition tests"
+set -euo pipefail
+
+exec zig build test-multi-raft-chaos --summary all "$@"

@@ -47,7 +47,9 @@ Applications may provide another implementation through `Transport.VTable`.
 
 `MultiRaftHost` creates one virtual `Transport` adapter per group, while only the
 shared transport owns physical lifecycle. `LoopbackMultiNetwork` is the built-in
-process-local implementation. `GrpcLiteMultiTransport` multiplexes envelopes
+process-local implementation; group-scoped link blocking, partitions, healing,
+drop counters, and stopped-node transport recreation support deterministic fault
+tests. `GrpcLiteMultiTransport` multiplexes envelopes
 for every group over one persistent directed stream per physical peer.
 `encodeEnvelope` and `decodeEnvelope` define its outer wire format. The original
 `GrpcLiteTransport` remains the single-group backend.

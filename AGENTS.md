@@ -24,6 +24,8 @@ mise run build
 mise run test
 mise run test-release-safe
 mise run test-grpc-multi-raft
+mise run test-multi-raft-chaos
+mise run test-multi-raft-soak
 mise run test-raft-sqlite
 mise run test-libelection
 mise run demo-libelection-vip
