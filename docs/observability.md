@@ -78,4 +78,5 @@ apply normal cardinality controls when hosting a large number of Groups.
 
 Exporters collect `getHostStatus` and `listGroupStatuses` sequentially. The
 result is thread-safe and internally valid, but may span adjacent Host iterations
-rather than represent one atomic global instant.
+rather than represent one atomic global instant. See
+[Operations](operations.md) for the human-readable ops report.

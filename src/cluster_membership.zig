@@ -38,6 +38,7 @@ pub const EncodeError = StructuralError || error{
 pub const DecodeError = StructuralError || error{
     InvalidMagic,
     InvalidVersion,
+    UnsupportedVersion,
     TruncatedData,
     TrailingData,
     LengthOverflow,
@@ -112,7 +113,7 @@ pub fn decodeMembershipContext(allocator: std.mem.Allocator, data: []const u8) M
     if (!std.mem.eql(u8, try decoder.take(membership_context_magic.len), membership_context_magic)) {
         return error.InvalidMagic;
     }
-    if (try decoder.readInt(u32) != membership_context_version) return error.InvalidVersion;
+    if (try decoder.readInt(u32) != membership_context_version) return error.UnsupportedVersion;
 
     const endpoint_count = try decoder.readInt(u32);
     const min_endpoint_bytes = std.math.mul(usize, endpoint_count, encoded_peer_min_size) catch
@@ -297,7 +298,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) DecodeError!Cluste
 fn decodeMembership(allocator: std.mem.Allocator, data: []const u8) DecodeError!ClusterMembership {
     var decoder = Decoder{ .data = data };
     if (!std.mem.eql(u8, try decoder.take(magic.len), magic)) return error.InvalidMagic;
-    if (try decoder.readInt(u32) != version) return error.InvalidVersion;
+    if (try decoder.readInt(u32) != version) return error.UnsupportedVersion;
 
     var cluster_id: ClusterId = undefined;
     @memcpy(&cluster_id, try decoder.take(cluster_id.len));
@@ -758,7 +759,7 @@ test "cluster membership decoder rejects malformed truncated and trailing data" 
     var bad_version = try allocator.dupe(u8, encoded);
     defer allocator.free(bad_version);
     std.mem.writeInt(u32, bad_version[magic.len..][0..4], version + 1, .little);
-    try std.testing.expectError(error.InvalidVersion, decode(allocator, bad_version));
+    try std.testing.expectError(error.UnsupportedVersion, decode(allocator, bad_version));
 
     var oversized_count = try allocator.dupe(u8, encoded);
     defer allocator.free(oversized_count);
@@ -845,7 +846,7 @@ test "membership context codec rejects malformed data" {
     try std.testing.expectError(error.InvalidMagic, decodeMembershipContext(allocator, bad));
     bad[0] = 'R';
     std.mem.writeInt(u32, bad[4..8], membership_context_version + 1, .little);
-    try std.testing.expectError(error.InvalidVersion, decodeMembershipContext(allocator, bad));
+    try std.testing.expectError(error.UnsupportedVersion, decodeMembershipContext(allocator, bad));
     std.mem.writeInt(u32, bad[4..8], membership_context_version, .little);
 
     std.mem.writeInt(u64, bad[12..20], 0, .little);

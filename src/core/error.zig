@@ -72,6 +72,7 @@ pub const Error = error{
     ReplicaMigrationCancelled,
     MigrationIntentCorrupt,
     MigrationIntentIo,
+    UnsupportedVersion,
 
     // RaftLog errors.
     ZeroEntriesInSlice,
@@ -207,6 +208,7 @@ pub fn name(e: Error) []const u8 {
         error.ReplicaMigrationCancelled => "ReplicaMigrationCancelled",
         error.MigrationIntentCorrupt => "MigrationIntentCorrupt",
         error.MigrationIntentIo => "MigrationIntentIo",
+        error.UnsupportedVersion => "UnsupportedVersion",
         error.ZeroEntriesInSlice => "ZeroEntriesInSlice",
         error.StepLocalMsg => "StepLocalMsg",
         error.StepPeerNotFound => "StepPeerNotFound",

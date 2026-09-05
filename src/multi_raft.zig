@@ -237,7 +237,9 @@ pub const ReplicaMigrationStatus = struct {
     target_node_id: u64,
     stage: ReplicaMigrationStage,
     elapsed_ticks: u64,
+    timeout_ticks: u64,
     stable_catch_up_ticks: u32,
+    required_stable_ticks: u32,
     target_matched: u64,
     leader_commit: u64,
     target_recent_active: bool,
@@ -513,7 +515,9 @@ const ReplicaMigration = struct {
             .target_node_id = self.target_node_id,
             .stage = self.stage.load(.acquire),
             .elapsed_ticks = now -| self.start_tick,
+            .timeout_ticks = self.timeout_ticks,
             .stable_catch_up_ticks = self.stable_ticks.load(.acquire),
+            .required_stable_ticks = self.required_stable_ticks,
             .target_matched = self.target_matched.load(.acquire),
             .leader_commit = self.leader_commit.load(.acquire),
             .target_recent_active = self.target_recent_active.load(.acquire),
@@ -1409,6 +1413,30 @@ pub const MultiRaftHost = struct {
         self.replica_migrations_mutex.unlock();
         defer self.allocator.free(target_address);
         return self.requestReplicaMigration(request, callback);
+    }
+
+    pub fn listReplicaMigrations(
+        self: *const MultiRaftHost,
+        allocator: std.mem.Allocator,
+    ) Error![]ReplicaMigrationStatus {
+        const mutex = @constCast(&self.replica_migrations_mutex);
+        spinLock(mutex);
+        defer mutex.unlock();
+        const statuses = try allocator.alloc(ReplicaMigrationStatus, self.replica_migration_ids.items.len);
+        errdefer allocator.free(statuses);
+        var initialized: usize = 0;
+        errdefer allocator.free(statuses[0..initialized]);
+        for (self.replica_migration_ids.items) |group_id| {
+            const migration = self.replica_migrations.get(group_id).?;
+            statuses[initialized] = migration.status(self.tick_iterations.load(.acquire));
+            initialized += 1;
+        }
+        std.mem.sort(ReplicaMigrationStatus, statuses, {}, struct {
+            fn lessThan(_: void, lhs: ReplicaMigrationStatus, rhs: ReplicaMigrationStatus) bool {
+                return lhs.group_id < rhs.group_id;
+            }
+        }.lessThan);
+        return statuses;
     }
 
     /// Replace a group using a new configuration and StateMachine.

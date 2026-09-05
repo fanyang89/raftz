@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Run Multi-Raft operations interface tests"
+set -euo pipefail
+
+exec zig build test-multi-raft-ops --summary all "$@"

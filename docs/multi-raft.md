@@ -237,8 +237,9 @@ voters perform a normal election.
 With a non-empty Host `data_dir`, migration intent is persisted before the
 request is accepted. Each CRC-protected record is replaced atomically under
 `<data_dir>/migrations/<group_id>.intent`. Completion, cancellation, and timeout
-remove the record; shutdown preserves it. Corrupt records fail Host startup
-instead of being ignored.
+remove the record; shutdown preserves it. Damaged records fail Host startup as
+corruption, and records written by a newer raftz fail as `UnsupportedVersion`.
+Neither is silently ignored.
 
 Callbacks and transient stages are not persisted. After restart, the application
 recreates the Group and calls `resumeReplicaMigration`; the workflow reloads the

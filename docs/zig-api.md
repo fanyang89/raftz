@@ -43,7 +43,9 @@ retired Groups after a committed removal while preserving their WAL.
 `listGroupStatuses` expose lock-safe host, scheduler, queue, and per-group
 snapshots. `encodePrometheusMetrics` returns an owned text exposition;
 `exportOpenTelemetryMetrics` emits typed `MetricPoint` values through a
-synchronous sink. `propose` and `readIndex` route directly to the selected group;
+synchronous sink. `encodeOpsReport` renders a human-readable key=value report
+and `listReplicaMigrations` snapshots active migration statuses.
+`propose` and `readIndex` route directly to the selected group;
 unknown IDs return `GroupNotFound`. See
 [Multi-Raft](multi-raft.md) for lifecycle, scheduling, ownership, and transport
 details.

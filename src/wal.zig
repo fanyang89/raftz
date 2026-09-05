@@ -494,6 +494,7 @@ pub const WAL = struct {
             if (metadata.cluster_membership.len > 0) {
                 var membership = cluster_membership_mod.decode(self.allocator, metadata.cluster_membership) catch |err| return switch (err) {
                     error.OutOfMemory => error.OutOfMemory,
+                    error.UnsupportedVersion => error.UnsupportedVersion,
                     else => error.ClusterMembershipParseError,
                 };
                 membership.validate(self.conf_state) catch {
@@ -1287,6 +1288,7 @@ fn mapError(err: anyerror) Error {
         error.HardStateParseError => error.HardStateParseError,
         error.ConfStateParseError => error.ConfStateParseError,
         error.ClusterMembershipParseError => error.ClusterMembershipParseError,
+        error.UnsupportedVersion => error.UnsupportedVersion,
         error.InvalidClusterMembership => error.InvalidClusterMembership,
         error.MissingClusterMembership => error.MissingClusterMembership,
         error.InvalidMembershipIndex => error.InvalidMembershipIndex,

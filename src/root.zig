@@ -63,6 +63,7 @@ const loopback_transport_mod = @import("loopback_transport.zig");
 const loopback_multi_transport_mod = @import("loopback_multi_transport.zig");
 const multi_raft_mod = @import("multi_raft.zig");
 const multi_raft_metrics_mod = @import("multi_raft_metrics.zig");
+const multi_raft_ops_mod = @import("multi_raft_ops.zig");
 const proposal_queue_mod = @import("proposal_queue.zig");
 const request_context_mod = @import("request_context.zig");
 const cluster_membership_mod = @import("cluster_membership.zig");
@@ -308,6 +309,7 @@ pub const MetricPoint = multi_raft_metrics_mod.MetricPoint;
 pub const OpenTelemetryMetricSink = multi_raft_metrics_mod.OpenTelemetryMetricSink;
 pub const exportOpenTelemetryMetrics = multi_raft_metrics_mod.exportOpenTelemetry;
 pub const encodePrometheusMetrics = multi_raft_metrics_mod.encodePrometheus;
+pub const encodeOpsReport = multi_raft_ops_mod.encodeOpsReport;
 
 pub const ProposalQueue = proposal_queue_mod.ProposalQueue;
 pub const ReadIndexQueue = proposal_queue_mod.ReadIndexQueue;

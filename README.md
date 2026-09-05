@@ -138,6 +138,7 @@ Lower-level modules remain available for experimentation and may evolve before 1
 - [Transport](docs/transport.md): transport contract and grpc-lite integration
 - [Multi-Raft](docs/multi-raft.md): group hosting, scheduling, WAL layout, and shared envelopes
 - [Observability](docs/observability.md): Prometheus exposition and OpenTelemetry metric sinks
+- [Operations](docs/operations.md): ops reports and upgrade version policy
 - [Testing](docs/testing.md): suites, fuzzing, fault injection, and upstream inventory
 - [Development](docs/development.md): tasks, build options, profiling, and coverage
 

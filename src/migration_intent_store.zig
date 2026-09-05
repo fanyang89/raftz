@@ -186,16 +186,15 @@ fn decode(
     max_address_bytes: usize,
 ) Error!Intent {
     if (bytes.len < fixed_size + checksum_size) return error.MigrationIntentCorrupt;
+    var offset: usize = 0;
+    if (!std.mem.eql(u8, bytes[offset .. offset + magic.len], magic)) return error.MigrationIntentCorrupt;
+    offset += magic.len;
+    const stored_version = readInt(u32, bytes, &offset) catch return error.MigrationIntentCorrupt;
+    if (stored_version != version) return error.UnsupportedVersion;
     const payload = bytes[0 .. bytes.len - checksum_size];
     var checksum_offset = payload.len;
     const expected_checksum = readInt(u32, bytes, &checksum_offset) catch return error.MigrationIntentCorrupt;
     if (crc32c.value(payload) != expected_checksum) return error.MigrationIntentCorrupt;
-    var offset: usize = 0;
-    if (!std.mem.eql(u8, bytes[offset .. offset + magic.len], magic)) return error.MigrationIntentCorrupt;
-    offset += magic.len;
-    if ((readInt(u32, bytes, &offset) catch return error.MigrationIntentCorrupt) != version) {
-        return error.MigrationIntentCorrupt;
-    }
     const group_id = readInt(u64, bytes, &offset) catch return error.MigrationIntentCorrupt;
     const source_node_id = readInt(u64, bytes, &offset) catch return error.MigrationIntentCorrupt;
     const target_node_id = readInt(u64, bytes, &offset) catch return error.MigrationIntentCorrupt;
