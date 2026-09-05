@@ -120,6 +120,26 @@ snapshot for the full registry; the caller owns the returned slice. Metrics are
 monotonic process-lifetime counters and snapshots may span adjacent event-loop
 operations rather than one global transaction.
 
+`encodePrometheusMetrics(host, allocator)` returns an owned Prometheus text
+exposition with `HELP`/`TYPE` metadata and stable `node_id`, `group_id`, state,
+and event labels. Applications can return the bytes from their existing metrics
+HTTP endpoint; raftz does not start another server.
+
+`exportOpenTelemetryMetrics(host, allocator, sink)` emits the same snapshot as
+synchronous `MetricPoint` callbacks. Descriptors carry dotted OpenTelemetry
+names, Prometheus aliases, descriptions, units, and either cumulative monotonic
+counter or gauge kind. Attributes are borrowed only for the callback duration;
+an SDK adapter should copy or record them immediately and supply its own resource
+attributes and timestamp. Both exporters are safe to call while the Host run loop
+is active.
+
+```zig
+const prometheus = try raft.encodePrometheusMetrics(host, allocator);
+defer allocator.free(prometheus);
+
+try raft.exportOpenTelemetryMetrics(host, allocator, otel_sink);
+```
+
 ## Snapshot Scheduling
 
 `MultiRaftHost` disables per-Raftor end-of-tick snapshot execution and applies a

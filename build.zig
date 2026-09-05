@@ -176,6 +176,7 @@ pub fn build(b: *std.Build) void {
     const grpc_raftor_test_step = b.step("test-grpc-raftor", "Run grpc Raftor integration tests");
     const grpc_multi_raft_test_step = b.step("test-grpc-multi-raft", "Run grpc Multi-Raft integration tests");
     const multi_raft_chaos_test_step = b.step("test-multi-raft-chaos", "Run Multi-Raft partition and soak tests");
+    const multi_raft_metrics_test_step = b.step("test-multi-raft-metrics", "Run Multi-Raft metrics exporter tests");
     // Full-suite grpc processes are serialized to stay within host worker limits.
     var grpc_full_test_tail: *std.Build.Step = &run_unit_tests.step;
     const test_specs = [_]TestSpec{
@@ -190,6 +191,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "raftor", .source = "tests/raftor_test.zig" },
         .{ .name = "multi-raft", .source = "tests/multi_raft_test.zig" },
         .{ .name = "multi-raft-chaos", .source = "tests/multi_raft_chaos_test.zig" },
+        .{ .name = "multi-raft-metrics", .source = "tests/multi_raft_metrics_test.zig" },
         .{ .name = "multi_node", .source = "tests/multi_node_test.zig" },
         .{ .name = "raftor_multi_node", .source = "tests/raftor_multi_node_test.zig" },
         .{ .name = "figure8", .source = "tests/figure8_test.zig" },
@@ -229,6 +231,9 @@ pub fn build(b: *std.Build) void {
             const full_run = addTestRun(b, tests, &coverage);
             if (std.mem.eql(u8, spec.name, "multi-raft-chaos")) {
                 multi_raft_chaos_test_step.dependOn(&full_run.step);
+            }
+            if (std.mem.eql(u8, spec.name, "multi-raft-metrics")) {
+                multi_raft_metrics_test_step.dependOn(&full_run.step);
             }
             test_step.dependOn(&full_run.step);
         }
