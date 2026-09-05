@@ -164,18 +164,23 @@ shutdown, or a conflicting external configuration change leave the last safe
 membership in place; the coordinator never automatically removes an added
 learner or voter.
 
+When the local source is the leader and proposal forwarding is enabled, the
+coordinator transfers leadership to the caught-up target before forwarding the
+source-removal change. This avoids an election gap on the normal path. With
+proposal forwarding disabled it removes the source directly and the remaining
+voters perform a normal election.
+
 Migration intent and callbacks are not persisted. After a coordinator restart,
 the application may submit the same intent again; the workflow infers whether
-the target is absent, already a learner, or already a voter. Removing the
-current leader is supported but causes a normal election window. Every Host
-tracks whether its local node has entered each Group's membership; once a
+the target is absent, already a learner, or already a voter. Every Host tracks
+whether its local node has entered each Group's membership; once a
 committed change later retires that node, the Host stops the local Group while
 preserving its WAL. A join-mode target is not stopped while it is still waiting
 to be added.
 
 `migration_step_budget` and `max_active_migrations` bound coordinator work and
-memory. Host metrics expose active, started, completed, failed, timed-out, and
-cancelled migrations.
+memory. Host metrics expose active, started, completed, failed, timed-out,
+cancelled, and leader-transfer counts.
 
 ## Shared Transport
 

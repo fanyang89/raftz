@@ -1184,6 +1184,10 @@ pub const Raftor = struct {
         };
     }
 
+    pub fn proposalForwardingEnabled(self: *const Raftor) bool {
+        return !self.config.raft.disable_proposal_forwarding;
+    }
+
     pub fn getMembershipIndex(self: *const Raftor) u64 {
         return self.ready_processor.getMembershipIndex();
     }

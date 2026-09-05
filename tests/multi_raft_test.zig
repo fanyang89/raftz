@@ -653,9 +653,10 @@ test "multi raft: migrating the local leader stops its retired group" {
     try std.testing.expect(migration.completed and migration.result.err == null);
     try std.testing.expectEqual(raft.MultiRaftGroupLifecycle.stopping, host_one.getStatus(94).?.lifecycle);
     try std.testing.expect(host_one.getStatus(94).?.locally_retired);
-    try std.testing.expectEqual(@as(u64, 1), host_one.getHostStatus().local_group_retirements);
-    try host_two.campaign(94);
-    try drive(&.{host_two}, 10);
+    const host_status = host_one.getHostStatus();
+    try std.testing.expectEqual(@as(u64, 1), host_status.local_group_retirements);
+    try std.testing.expect(host_status.replica_migration_leader_transfers >= 1);
+    try drive(&.{host_two}, 2);
     try std.testing.expectEqual(raft.StateRole.leader, host_two.getStatus(94).?.node.role);
 }
 

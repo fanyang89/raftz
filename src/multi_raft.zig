@@ -147,6 +147,7 @@ pub const MultiRaftHostStatus = struct {
     replica_migrations_failed: u64,
     replica_migrations_timed_out: u64,
     replica_migrations_cancelled: u64,
+    replica_migration_leader_transfers: u64,
     local_group_retirements: u64,
 };
 
@@ -165,6 +166,7 @@ pub const ReplicaMigrationStage = enum(u8) {
     catching_up,
     waiting_voter,
     stabilizing_voter,
+    waiting_target_leader,
     waiting_source_removal,
 };
 
@@ -405,6 +407,7 @@ const ReplicaMigration = struct {
     leader_commit: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     target_recent_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     cancel_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    source_removal_submitted: bool = false,
     allocator: std.mem.Allocator,
 
     fn create(
@@ -873,6 +876,7 @@ pub const MultiRaftHost = struct {
     replica_migrations_failed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     replica_migrations_timed_out: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     replica_migrations_cancelled: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    replica_migration_leader_transfers: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     local_group_retirements: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn create(
@@ -1268,6 +1272,7 @@ pub const MultiRaftHost = struct {
             .replica_migrations_failed = self.replica_migrations_failed.load(.acquire),
             .replica_migrations_timed_out = self.replica_migrations_timed_out.load(.acquire),
             .replica_migrations_cancelled = self.replica_migrations_cancelled.load(.acquire),
+            .replica_migration_leader_transfers = self.replica_migration_leader_transfers.load(.acquire),
             .local_group_retirements = self.local_group_retirements.load(.acquire),
         };
         const mutex = @constCast(&self.groups_mutex);
@@ -1507,13 +1512,20 @@ pub const MultiRaftHost = struct {
             return .{ .completed = error.ReplicaMigrationConflict };
         }
         if (probe.source_role != .voter) return .{ .completed = error.ReplicaMigrationConflict };
+        if (probe.joint_configuration) return .idle;
+        const stage = migration.stage.load(.acquire);
+        if (stage == .waiting_target_leader) {
+            return self.waitMigrationTargetLeader(selected, migration, probe);
+        }
+        if (stage == .waiting_source_removal and probe.local_role != .leader) {
+            return self.waitMigrationSourceRemoval(selected, migration, probe);
+        }
         if (probe.local_role != .leader) {
             migration.stable_ticks.store(0, .release);
             return .idle;
         }
-        if (probe.joint_configuration) return .idle;
 
-        return switch (migration.stage.load(.acquire)) {
+        return switch (stage) {
             .adding_learner => self.addMigrationLearner(selected, migration, probe),
             .waiting_learner => switch (probe.target_role orelse {
                 if (!probe.pending_conf_change) migration.stage.store(.adding_learner, .release);
@@ -1532,6 +1544,7 @@ pub const MultiRaftHost = struct {
                 .voter => self.advanceMigrationStage(migration, .stabilizing_voter),
             },
             .stabilizing_voter => self.stabilizeMigrationVoter(selected, migration, probe, advance_clock),
+            .waiting_target_leader => unreachable,
             .waiting_source_removal => self.waitMigrationSourceRemoval(selected, migration, probe),
         };
     }
@@ -1583,16 +1596,42 @@ pub const MultiRaftHost = struct {
         probe: raftor_mod.ReplicaMigrationProbe,
         advance_clock: bool,
     ) MigrationStepResult {
-        _ = self;
         if (probe.target_role != .voter) return .{ .completed = error.ReplicaMigrationConflict };
         if (probe.pending_conf_change) return .idle;
         if (!migrationCaughtUp(migration, probe, advance_clock)) return .idle;
-        group.raftor.removeNode(migration.source_node_id) catch |err| {
+        if (migration.source_node_id == self.config.node_id and
+            probe.leader_id == migration.source_node_id and
+            group.raftor.proposalForwardingEnabled())
+        {
+            group.raftor.transferLeader(migration.target_node_id) catch |err| {
+                if (err == error.ProposalDropped) return .idle;
+                return .{ .completed = err };
+            };
+            _ = self.replica_migration_leader_transfers.fetchAdd(1, .monotonic);
+            migration.stage.store(.waiting_target_leader, .release);
+            migration.stable_ticks.store(0, .release);
+            return .worked;
+        }
+        return self.submitMigrationSourceRemoval(group, migration, probe);
+    }
+
+    fn waitMigrationTargetLeader(
+        self: *MultiRaftHost,
+        group: *Group,
+        migration: *ReplicaMigration,
+        probe: raftor_mod.ReplicaMigrationProbe,
+    ) MigrationStepResult {
+        if (probe.target_role != .voter) return .{ .completed = error.ReplicaMigrationConflict };
+        if (probe.pending_conf_change) return .idle;
+        if (probe.leader_id == migration.target_node_id) {
+            return self.submitMigrationSourceRemoval(group, migration, probe);
+        }
+        if (probe.local_role != .leader) return .idle;
+        group.raftor.transferLeader(migration.target_node_id) catch |err| {
             if (err == error.ProposalDropped) return .idle;
             return .{ .completed = err };
         };
-        migration.stage.store(.waiting_source_removal, .release);
-        migration.stable_ticks.store(0, .release);
+        _ = self.replica_migration_leader_transfers.fetchAdd(1, .monotonic);
         return .worked;
     }
 
@@ -1602,14 +1641,28 @@ pub const MultiRaftHost = struct {
         migration: *ReplicaMigration,
         probe: raftor_mod.ReplicaMigrationProbe,
     ) MigrationStepResult {
-        _ = self;
         if (probe.source_role == null) return .{ .completed = null };
         if (probe.target_role != .voter) return .{ .completed = error.ReplicaMigrationConflict };
         if (probe.pending_conf_change) return .idle;
+        if (migration.source_removal_submitted and probe.local_role != .leader) return .idle;
+        return self.submitMigrationSourceRemoval(group, migration, probe);
+    }
+
+    fn submitMigrationSourceRemoval(
+        self: *MultiRaftHost,
+        group: *Group,
+        migration: *ReplicaMigration,
+        probe: raftor_mod.ReplicaMigrationProbe,
+    ) MigrationStepResult {
+        _ = self;
+        if (probe.local_role != .leader and !group.raftor.proposalForwardingEnabled()) return .idle;
         group.raftor.removeNode(migration.source_node_id) catch |err| {
             if (err == error.ProposalDropped) return .idle;
             return .{ .completed = err };
         };
+        migration.source_removal_submitted = true;
+        migration.stage.store(.waiting_source_removal, .release);
+        migration.stable_ticks.store(0, .release);
         return .worked;
     }
 
