@@ -170,11 +170,22 @@ source-removal change. This avoids an election gap on the normal path. With
 proposal forwarding disabled it removes the source directly and the remaining
 voters perform a normal election.
 
-Migration intent and callbacks are not persisted. After a coordinator restart,
-the application may submit the same intent again; the workflow infers whether
-the target is absent, already a learner, or already a voter. Every Host tracks
-whether its local node has entered each Group's membership; once a
-committed change later retires that node, the Host stops the local Group while
+With a non-empty Host `data_dir`, migration intent is persisted before the
+request is accepted. Each CRC-protected record is replaced atomically under
+`<data_dir>/migrations/<group_id>.intent`. Completion, cancellation, and timeout
+remove the record; shutdown preserves it. Corrupt records fail Host startup
+instead of being ignored.
+
+Callbacks and transient stages are not persisted. After restart, the application
+recreates the Group and calls `resumeReplicaMigration`; the workflow reloads the
+original IDs, address, timeout, and stability requirement, then infers whether
+the target is absent, already a learner, or already a voter. The timeout starts
+again when resumed. `getRecoveredReplicaMigrationStatus` exposes intents waiting
+for their Group and callback. Memory-backed Hosts retain the existing in-memory
+behavior without recovery.
+
+Every Host tracks whether its local node has entered each Group's membership.
+Once a committed change later retires that node, the Host stops the local Group while
 preserving its WAL. A join-mode target is not stopped while it is still waiting
 to be added.
 

@@ -800,6 +800,151 @@ test "multi raft: migration capacity and shutdown drain callbacks" {
     try std.testing.expectEqual(@as(usize, 0), host.getHostStatus().active_replica_migrations);
 }
 
+test "multi raft: durable migration intent resumes after host restart" {
+    var fixture = try raft.FsTestFixture.init(allocator, .real);
+    defer fixture.deinit();
+    const initial_peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
+    var config = groupConfig(101, 1, &initial_peers);
+    config.raftor.cluster_id = [_]u8{0x11} ** 16;
+
+    {
+        const network = try raft.LoopbackMultiNetwork.create(allocator);
+        defer network.destroy();
+        const transport = try network.createTransport(1);
+        const host = try raft.MultiRaftHost.create(allocator, .{
+            .node_id = 1,
+            .data_dir = fixture.root(),
+            .file_system = fixture.fs(),
+        }, transport.transport());
+        defer host.destroy();
+        var machine = raft.MockStateMachine.init(allocator);
+        defer machine.deinit();
+        try host.addGroup(config, machine.stateMachine());
+        try host.campaign(101);
+        var interrupted = ReplicaMigrationCapture{};
+        try host.requestReplicaMigration(.{
+            .group_id = 101,
+            .source_node_id = 1,
+            .target_node_id = 2,
+            .target_address = "node-2",
+            .timeout_ticks = 100,
+        }, interrupted.callback());
+        try std.testing.expectEqual(@as(usize, 1), host.getHostStatus().active_replica_migrations);
+        host.stop();
+        try std.testing.expect(interrupted.completed);
+        try std.testing.expectEqual(error.ShuttingDown, interrupted.result.err.?);
+    }
+
+    {
+        const network = try raft.LoopbackMultiNetwork.create(allocator);
+        defer network.destroy();
+        const transport = try network.createTransport(1);
+        const host = try raft.MultiRaftHost.create(allocator, .{
+            .node_id = 1,
+            .data_dir = fixture.root(),
+            .file_system = fixture.fs(),
+        }, transport.transport());
+        defer host.destroy();
+        try std.testing.expectEqual(@as(usize, 1), host.getHostStatus().recovered_replica_migrations);
+        const recovered = host.getRecoveredReplicaMigrationStatus(101).?;
+        try std.testing.expectEqual(@as(u64, 1), recovered.source_node_id);
+        try std.testing.expectEqual(@as(u64, 2), recovered.target_node_id);
+        try std.testing.expectEqual(@as(usize, "node-2".len), recovered.target_address_bytes);
+        var unavailable = ReplicaMigrationCapture{};
+        try std.testing.expectError(error.GroupNotFound, host.resumeReplicaMigration(101, unavailable.callback()));
+
+        var machine = raft.MockStateMachine.init(allocator);
+        defer machine.deinit();
+        try host.addGroup(config, machine.stateMachine());
+        var conflicting = ReplicaMigrationCapture{};
+        try std.testing.expectError(
+            error.ReplicaMigrationConflict,
+            host.requestReplicaMigration(.{
+                .group_id = 101,
+                .source_node_id = 1,
+                .target_node_id = 2,
+                .target_address = "different-node-2",
+                .timeout_ticks = 100,
+            }, conflicting.callback()),
+        );
+        var resumed = ReplicaMigrationCapture{};
+        try host.resumeReplicaMigration(101, resumed.callback());
+        try std.testing.expectEqual(@as(usize, 0), host.getHostStatus().recovered_replica_migrations);
+        try host.cancelReplicaMigration(101);
+        _ = try host.poll();
+        try std.testing.expect(resumed.completed);
+        try std.testing.expectEqual(error.ReplicaMigrationCancelled, resumed.result.err.?);
+    }
+
+    {
+        const network = try raft.LoopbackMultiNetwork.create(allocator);
+        defer network.destroy();
+        const transport = try network.createTransport(1);
+        const host = try raft.MultiRaftHost.create(allocator, .{
+            .node_id = 1,
+            .data_dir = fixture.root(),
+            .file_system = fixture.fs(),
+        }, transport.transport());
+        defer host.destroy();
+        try std.testing.expectEqual(@as(usize, 0), host.getHostStatus().recovered_replica_migrations);
+    }
+}
+
+test "multi raft: corrupt migration intent fails host recovery" {
+    var fixture = try raft.FsTestFixture.init(allocator, .real);
+    defer fixture.deinit();
+    const initial_peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
+    var config = groupConfig(102, 1, &initial_peers);
+    config.raftor.cluster_id = [_]u8{0x12} ** 16;
+    {
+        const network = try raft.LoopbackMultiNetwork.create(allocator);
+        defer network.destroy();
+        const transport = try network.createTransport(1);
+        const host = try raft.MultiRaftHost.create(allocator, .{
+            .node_id = 1,
+            .data_dir = fixture.root(),
+            .file_system = fixture.fs(),
+        }, transport.transport());
+        defer host.destroy();
+        var machine = raft.MockStateMachine.init(allocator);
+        defer machine.deinit();
+        try host.addGroup(config, machine.stateMachine());
+        var interrupted = ReplicaMigrationCapture{};
+        try host.requestReplicaMigration(.{
+            .group_id = 102,
+            .source_node_id = 1,
+            .target_node_id = 2,
+            .target_address = "node-2",
+        }, interrupted.callback());
+        host.stop();
+    }
+
+    const path = try std.fmt.allocPrintSentinel(
+        allocator,
+        "{s}/migrations/102.intent",
+        .{fixture.root()},
+        0,
+    );
+    defer allocator.free(path);
+    const fs = fixture.fs();
+    const handle = try fs.open(path, .read_write);
+    try fs.pwriteAll(handle, "X", 0);
+    try fs.syncFile(handle);
+    try fs.close(handle);
+
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    try std.testing.expectError(
+        error.MigrationIntentCorrupt,
+        raft.MultiRaftHost.create(allocator, .{
+            .node_id = 1,
+            .data_dir = fixture.root(),
+            .file_system = fs,
+        }, transport.transport()),
+    );
+}
+
 test "multi raft: terminal group failure does not stop healthy groups" {
     const network = try raft.LoopbackMultiNetwork.create(allocator);
     defer network.destroy();

@@ -13,6 +13,7 @@ const state_machine_mod = @import("state_machine.zig");
 const transport_mod = @import("transport.zig");
 const multi_transport_mod = @import("multi_transport.zig");
 const group_config_mod = @import("multi_raft_group_config.zig");
+const migration_intent_store_mod = @import("migration_intent_store.zig");
 const proposal_tracker_mod = @import("proposal_tracker.zig");
 
 const Error = error_model.Error;
@@ -29,6 +30,8 @@ const Envelope = multi_transport_mod.Envelope;
 const MultiPeerEvent = multi_transport_mod.PeerEvent;
 const GroupId = multi_transport_mod.GroupId;
 const OwnedGroupConfig = group_config_mod.OwnedGroupConfig;
+const MigrationIntent = migration_intent_store_mod.Intent;
+const MigrationIntentStore = migration_intent_store_mod.Store;
 
 const log = @import("grpc_lite").log;
 
@@ -142,6 +145,7 @@ pub const MultiRaftHostStatus = struct {
     snapshot_successes: u64,
     snapshot_failures: u64,
     active_replica_migrations: usize,
+    recovered_replica_migrations: usize,
     replica_migrations_started: u64,
     replica_migrations_completed: u64,
     replica_migrations_failed: u64,
@@ -158,6 +162,15 @@ pub const ReplicaMigrationRequest = struct {
     target_address: []const u8,
     timeout_ticks: u64 = 600,
     stable_catch_up_ticks: u32 = 2,
+};
+
+pub const RecoveredReplicaMigrationStatus = struct {
+    group_id: GroupId,
+    source_node_id: u64,
+    target_node_id: u64,
+    timeout_ticks: u64,
+    stable_catch_up_ticks: u32,
+    target_address_bytes: usize,
 };
 
 pub const ReplicaMigrationStage = enum(u8) {
@@ -451,6 +464,26 @@ const ReplicaMigration = struct {
         };
     }
 };
+
+fn migrationIntentView(request: ReplicaMigrationRequest) migration_intent_store_mod.IntentView {
+    return .{
+        .group_id = request.group_id,
+        .source_node_id = request.source_node_id,
+        .target_node_id = request.target_node_id,
+        .target_address = request.target_address,
+        .timeout_ticks = request.timeout_ticks,
+        .stable_catch_up_ticks = request.stable_catch_up_ticks,
+    };
+}
+
+fn migrationIntentMatches(intent: MigrationIntent, request: ReplicaMigrationRequest) bool {
+    return intent.group_id == request.group_id and
+        intent.source_node_id == request.source_node_id and
+        intent.target_node_id == request.target_node_id and
+        intent.timeout_ticks == request.timeout_ticks and
+        intent.stable_catch_up_ticks == request.stable_catch_up_ticks and
+        std.mem.eql(u8, intent.target_address, request.target_address);
+}
 
 fn migrationCaughtUp(
     migration: *ReplicaMigration,
@@ -842,6 +875,8 @@ pub const MultiRaftHost = struct {
     group_operations: GroupOperationQueue,
     group_wakes: GroupWakeQueue,
     replica_migrations: std.AutoHashMap(GroupId, *ReplicaMigration),
+    recovered_replica_migrations: std.AutoHashMap(GroupId, MigrationIntent),
+    migration_store: ?MigrationIntentStore,
     replica_migration_ids: std.ArrayList(GroupId) = .empty,
     replica_migrations_mutex: std.atomic.Mutex = .unlocked,
     next_group_generation: u64 = 0,
@@ -888,7 +923,42 @@ pub const MultiRaftHost = struct {
         if (transport.identity()) |identity| {
             if (identity.node_id != config.node_id) return error.TransportIdentityMismatch;
         }
-        if (config.data_dir.len != 0) try ensureGroupRoot(allocator, config);
+        var migration_store: ?MigrationIntentStore = null;
+        if (config.data_dir.len != 0) {
+            try ensureGroupRoot(allocator, config);
+            migration_store = try MigrationIntentStore.init(
+                allocator,
+                config.data_dir,
+                config.file_system,
+                config.max_replica_migration_address_bytes,
+            );
+        }
+        errdefer if (migration_store) |*store| store.deinit();
+
+        var recovered = std.AutoHashMap(GroupId, MigrationIntent).init(allocator);
+        errdefer {
+            var iterator = recovered.valueIterator();
+            while (iterator.next()) |intent| intent.deinit(allocator);
+            recovered.deinit();
+        }
+        if (migration_store) |*store| {
+            const intents = try store.loadAll(config.max_active_migrations);
+            defer allocator.free(intents);
+            errdefer for (intents) |*intent| intent.deinit(allocator);
+            try recovered.ensureUnusedCapacity(@intCast(intents.len));
+            for (intents) |*intent| {
+                if (recovered.contains(intent.group_id)) return error.MigrationIntentCorrupt;
+                const owned = intent.*;
+                intent.target_address = &.{};
+                recovered.putAssumeCapacity(owned.group_id, owned);
+            }
+        }
+
+        const group_wakes = try GroupWakeQueue.init(allocator, config.max_queued_group_wakes);
+        errdefer {
+            var owned_wakes = group_wakes;
+            owned_wakes.deinit();
+        }
         const self = try allocator.create(MultiRaftHost);
         errdefer allocator.destroy(self);
         self.* = .{
@@ -897,17 +967,18 @@ pub const MultiRaftHost = struct {
             .transport = transport,
             .groups = std.AutoHashMap(GroupId, *Group).init(allocator),
             .replica_migrations = std.AutoHashMap(GroupId, *ReplicaMigration).init(allocator),
+            .recovered_replica_migrations = recovered,
+            .migration_store = migration_store,
             .group_operations = GroupOperationQueue.init(
                 allocator,
                 config.max_queued_group_operations,
                 config.max_queued_group_operation_bytes,
             ),
-            .group_wakes = try GroupWakeQueue.init(allocator, config.max_queued_group_wakes),
+            .group_wakes = group_wakes,
         };
         errdefer self.groups.deinit();
         errdefer self.replica_migrations.deinit();
         errdefer self.group_operations.deinit();
-        errdefer self.group_wakes.deinit();
 
         self.transport.setEnvelopeCallback(.{ .ctx = self, .function = onEnvelope });
         self.transport.setPeerEventCallback(.{ .ctx = self, .function = onPeerEvent });
@@ -939,6 +1010,10 @@ pub const MultiRaftHost = struct {
         std.debug.assert(self.replica_migrations.count() == 0);
         self.replica_migrations.deinit();
         self.replica_migration_ids.deinit(self.allocator);
+        var recovered_iterator = self.recovered_replica_migrations.valueIterator();
+        while (recovered_iterator.next()) |intent| intent.deinit(self.allocator);
+        self.recovered_replica_migrations.deinit();
+        if (self.migration_store) |*store| store.deinit();
         self.group_operations.deinit();
         self.group_wakes.deinit();
         self.transport.setEnvelopeCallback(null);
@@ -1051,13 +1126,24 @@ pub const MultiRaftHost = struct {
         spinLock(&self.replica_migrations_mutex);
         defer self.replica_migrations_mutex.unlock();
         if (self.replica_migrations.contains(request.group_id)) return error.DuplicateRequest;
-        if (self.replica_migrations.count() >= self.config.max_active_migrations) {
-            return error.GroupOperationBackpressure;
+        const recovered = self.recovered_replica_migrations.get(request.group_id);
+        if (recovered) |intent| {
+            if (!migrationIntentMatches(intent, request)) return error.ReplicaMigrationConflict;
+        } else {
+            const total = self.replica_migrations.count() + self.recovered_replica_migrations.count();
+            if (total >= self.config.max_active_migrations) return error.GroupOperationBackpressure;
         }
         try self.replica_migrations.ensureUnusedCapacity(1);
         try self.replica_migration_ids.ensureUnusedCapacity(self.allocator, 1);
+        if (recovered == null) {
+            if (self.migration_store) |*store| try store.put(migrationIntentView(request));
+        }
         self.replica_migrations.putAssumeCapacity(request.group_id, migration);
         self.replica_migration_ids.appendAssumeCapacity(request.group_id);
+        if (self.recovered_replica_migrations.fetchRemove(request.group_id)) |entry| {
+            var intent = entry.value;
+            intent.deinit(self.allocator);
+        }
         _ = self.replica_migrations_started.fetchAdd(1, .monotonic);
     }
 
@@ -1082,6 +1168,52 @@ pub const MultiRaftHost = struct {
         defer mutex.unlock();
         const migration = self.replica_migrations.get(group_id) orelse return null;
         return migration.status(self.tick_iterations.load(.acquire));
+    }
+
+    pub fn getRecoveredReplicaMigrationStatus(
+        self: *const MultiRaftHost,
+        group_id: GroupId,
+    ) ?RecoveredReplicaMigrationStatus {
+        const mutex = @constCast(&self.replica_migrations_mutex);
+        spinLock(mutex);
+        defer mutex.unlock();
+        const intent = self.recovered_replica_migrations.get(group_id) orelse return null;
+        return .{
+            .group_id = intent.group_id,
+            .source_node_id = intent.source_node_id,
+            .target_node_id = intent.target_node_id,
+            .timeout_ticks = intent.timeout_ticks,
+            .stable_catch_up_ticks = intent.stable_catch_up_ticks,
+            .target_address_bytes = intent.target_address.len,
+        };
+    }
+
+    pub fn resumeReplicaMigration(
+        self: *MultiRaftHost,
+        group_id: GroupId,
+        callback: ReplicaMigrationCallback,
+    ) Error!void {
+        if (group_id == 0) return error.InvalidGroupId;
+        spinLock(&self.replica_migrations_mutex);
+        const intent = self.recovered_replica_migrations.get(group_id) orelse {
+            self.replica_migrations_mutex.unlock();
+            return error.GroupNotFound;
+        };
+        const target_address = self.allocator.dupe(u8, intent.target_address) catch |err| {
+            self.replica_migrations_mutex.unlock();
+            return err;
+        };
+        const request = ReplicaMigrationRequest{
+            .group_id = intent.group_id,
+            .source_node_id = intent.source_node_id,
+            .target_node_id = intent.target_node_id,
+            .target_address = target_address,
+            .timeout_ticks = intent.timeout_ticks,
+            .stable_catch_up_ticks = intent.stable_catch_up_ticks,
+        };
+        self.replica_migrations_mutex.unlock();
+        defer self.allocator.free(target_address);
+        return self.requestReplicaMigration(request, callback);
     }
 
     /// Replace a group using a new configuration and StateMachine.
@@ -1267,6 +1399,7 @@ pub const MultiRaftHost = struct {
             .snapshot_successes = self.snapshot_successes.load(.acquire),
             .snapshot_failures = self.snapshot_failures.load(.acquire),
             .active_replica_migrations = self.activeReplicaMigrationCount(),
+            .recovered_replica_migrations = self.recoveredReplicaMigrationCount(),
             .replica_migrations_started = self.replica_migrations_started.load(.acquire),
             .replica_migrations_completed = self.replica_migrations_completed.load(.acquire),
             .replica_migrations_failed = self.replica_migrations_failed.load(.acquire),
@@ -1682,13 +1815,22 @@ pub const MultiRaftHost = struct {
         migration: *ReplicaMigration,
         migration_error: ?Error,
     ) void {
+        var final_error = migration_error;
+        const preserve_intent = if (migration_error) |err| err == error.ShuttingDown else false;
+        if (!preserve_intent) {
+            if (self.migration_store) |*store| {
+                store.remove(migration.group_id) catch |err| {
+                    final_error = err;
+                };
+            }
+        }
         spinLock(&self.replica_migrations_mutex);
         const removed = self.replica_migrations.remove(migration.group_id);
         if (removed) self.removeReplicaMigrationId(migration.group_id);
         self.replica_migrations_mutex.unlock();
         if (!removed) return;
 
-        if (migration_error) |err| {
+        if (final_error) |err| {
             _ = self.replica_migrations_failed.fetchAdd(1, .monotonic);
             if (err == error.Timeout) _ = self.replica_migrations_timed_out.fetchAdd(1, .monotonic);
             if (err == error.ReplicaMigrationCancelled) {
@@ -1701,7 +1843,7 @@ pub const MultiRaftHost = struct {
             .group_id = migration.group_id,
             .source_node_id = migration.source_node_id,
             .target_node_id = migration.target_node_id,
-            .err = migration_error,
+            .err = final_error,
         });
         migration.destroy();
     }
@@ -1724,6 +1866,13 @@ pub const MultiRaftHost = struct {
         spinLock(mutex);
         defer mutex.unlock();
         return self.replica_migrations.count();
+    }
+
+    fn recoveredReplicaMigrationCount(self: *const MultiRaftHost) usize {
+        const mutex = @constCast(&self.replica_migrations_mutex);
+        spinLock(mutex);
+        defer mutex.unlock();
+        return self.recovered_replica_migrations.count();
     }
 
     fn failReplicaMigrations(self: *MultiRaftHost, migration_error: Error) void {

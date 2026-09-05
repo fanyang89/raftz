@@ -70,6 +70,8 @@ pub const Error = error{
     GroupOperationBackpressure,
     ReplicaMigrationConflict,
     ReplicaMigrationCancelled,
+    MigrationIntentCorrupt,
+    MigrationIntentIo,
 
     // RaftLog errors.
     ZeroEntriesInSlice,
@@ -203,6 +205,8 @@ pub fn name(e: Error) []const u8 {
         error.GroupOperationBackpressure => "GroupOperationBackpressure",
         error.ReplicaMigrationConflict => "ReplicaMigrationConflict",
         error.ReplicaMigrationCancelled => "ReplicaMigrationCancelled",
+        error.MigrationIntentCorrupt => "MigrationIntentCorrupt",
+        error.MigrationIntentIo => "MigrationIntentIo",
         error.ZeroEntriesInSlice => "ZeroEntriesInSlice",
         error.StepLocalMsg => "StepLocalMsg",
         error.StepPeerNotFound => "StepPeerNotFound",

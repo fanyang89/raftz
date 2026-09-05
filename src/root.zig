@@ -288,6 +288,7 @@ pub const GroupOperationResult = multi_raft_mod.GroupOperationResult;
 pub const GroupOperationCallback = multi_raft_mod.GroupOperationCallback;
 pub const GroupOperationQueueStats = multi_raft_mod.GroupOperationQueueStats;
 pub const ReplicaMigrationRequest = multi_raft_mod.ReplicaMigrationRequest;
+pub const RecoveredReplicaMigrationStatus = multi_raft_mod.RecoveredReplicaMigrationStatus;
 pub const ReplicaMigrationStage = multi_raft_mod.ReplicaMigrationStage;
 pub const ReplicaMigrationStatus = multi_raft_mod.ReplicaMigrationStatus;
 pub const ReplicaMigrationResult = multi_raft_mod.ReplicaMigrationResult;

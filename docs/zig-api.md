@@ -29,10 +29,13 @@ through `GroupOperationCallback`. Automatic snapshots use the host-wide
 `snapshot_budget` while retaining each group's thresholds and retry limits.
 `requestReplicaMigration` coordinates learner addition, catch-up, promotion,
 leader handoff, and source removal; `getReplicaMigrationStatus` and
-`cancelReplicaMigration` expose
-its in-memory lifecycle. The target Group must be prepared in join mode before
-migration starts. Hosts automatically stop locally retired Groups after a
-committed removal while preserving their WAL. `getHostStatus`, `getStatus`, and
+`cancelReplicaMigration` expose its active lifecycle. Durable Hosts persist the
+intent under their data directory. After restart,
+`getRecoveredReplicaMigrationStatus` and `resumeReplicaMigration` restore the
+workflow once its Group and callback are available. The target Group must be
+prepared in join mode before migration starts. Hosts automatically stop locally
+retired Groups after a committed removal while preserving their WAL.
+`getHostStatus`, `getStatus`, and
 `listGroupStatuses` expose lock-safe host, scheduler, queue, and per-group
 snapshots. `propose` and `readIndex` route directly to the selected group;
 unknown IDs return `GroupNotFound`. See
