@@ -12,6 +12,7 @@ const MessageType = types.MessageType;
 const GroupId = multi_transport_mod.GroupId;
 const Envelope = multi_transport_mod.Envelope;
 const EnvelopeCallback = multi_transport_mod.EnvelopeCallback;
+const PeerEvent = multi_transport_mod.PeerEvent;
 const PeerEventCallback = multi_transport_mod.PeerEventCallback;
 const MultiTransport = multi_transport_mod.MultiTransport;
 
@@ -192,6 +193,7 @@ pub const LoopbackMultiTransport = struct {
     network: *LoopbackMultiNetwork,
     node_id: u64,
     inbox: std.ArrayList(Envelope) = .empty,
+    peer_events: std.ArrayList(PeerEvent) = .empty,
     callback: ?EnvelopeCallback = null,
     peer_event_callback: ?PeerEventCallback = null,
     stopped: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -212,14 +214,30 @@ pub const LoopbackMultiTransport = struct {
     pub fn deinit(self: *LoopbackMultiTransport) void {
         for (self.inbox.items) |*envelope| envelope.deinit(self.allocator);
         self.inbox.deinit(self.allocator);
+        self.peer_events.deinit(self.allocator);
         self.* = undefined;
     }
 
     pub fn pollOne(self: *LoopbackMultiTransport) Error!bool {
-        if (self.stopped.load(.acquire) or self.inbox.items.len == 0) return false;
-        const callback = self.callback orelse return false;
-        try callback.invoke(self.inbox.orderedRemove(0));
-        return true;
+        if (self.stopped.load(.acquire)) return false;
+        if (self.inbox.items.len != 0) {
+            const callback = self.callback orelse return false;
+            try callback.invoke(self.inbox.orderedRemove(0));
+            return true;
+        }
+        if (self.peer_events.items.len != 0) {
+            const callback = self.peer_event_callback orelse return false;
+            try callback.invoke(self.peer_events.orderedRemove(0));
+            return true;
+        }
+        return false;
+    }
+
+    pub fn emitPeerEvent(self: *LoopbackMultiTransport, event: PeerEvent) Error!void {
+        if (event.group_id == 0) return error.InvalidGroupId;
+        if (event.peer_id == 0) return error.InvalidNodeId;
+        if (self.stopped.load(.acquire)) return error.ShuttingDown;
+        try self.peer_events.append(self.allocator, event);
     }
 
     fn startImpl(ctx: *anyopaque) Error!void {

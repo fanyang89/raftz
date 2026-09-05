@@ -280,6 +280,7 @@ pub const LoopbackMultiTransport = loopback_multi_transport_mod.LoopbackMultiTra
 pub const TransportIdentity = transport_mod.TransportIdentity;
 
 pub const MultiRaftConfig = multi_raft_mod.MultiRaftConfig;
+pub const MultiRaftGroupLimits = multi_raft_mod.MultiRaftGroupLimits;
 pub const MultiRaftGroupConfig = multi_raft_mod.MultiRaftGroupConfig;
 pub const MultiRaftGroupLifecycle = multi_raft_mod.GroupLifecycle;
 pub const MultiRaftGroupStatus = multi_raft_mod.MultiRaftGroupStatus;

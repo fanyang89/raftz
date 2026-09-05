@@ -103,6 +103,37 @@ together. Set `priority_poll_budget` to zero to disable activity hints.
 Terminal group errors are isolated and stop only that group. Retryable errors
 are reported by `tick` or `poll` and retained in `MultiRaftGroupStatus`.
 
+## Per-Group Resource Limits
+
+`MultiRaftGroupConfig.limits` can lower three Host-level ingress ceilings for one
+Group:
+
+- `max_inbox_messages`
+- `max_inbox_bytes`
+- `max_peer_events`
+
+The corresponding Host defaults are `max_group_inbox_messages`,
+`max_group_inbox_bytes`, and `max_group_peer_events`. A Group override cannot
+raise a Host ceiling. Message bytes include the Message structure, entries,
+contexts, snapshot data, membership data, and ConfState arrays using a bounded
+retained-size estimate. Snapshots use one reserved, replace-latest slot so a
+byte-saturated ordinary inbox cannot permanently strand a leader in snapshot
+state. The reserved snapshot may exceed the ordinary byte ceiling but remains
+bounded by the shared transport's maximum frame size.
+
+`requestUpdateGroupLimits` applies new effective limits through the existing
+bounded management queue. Null values reset a dimension to its Host ceiling.
+Lowering a limit does not evict items already accepted; new ingress is dropped
+until the queue drains below the new threshold.
+
+Quota drops are isolated to the affected Group and return to normal Raft retry
+behavior instead of failing the Host tick. Host and Group status expose pending
+message bytes, effective limits, dropped messages, dropped bytes, and dropped
+peer events. Proposal and ReadIndex ingress remain independently bounded by each
+Group's `RaftorConfig` queue limits. Outbound Raft messages continue to use the
+shared transport's backpressure contract and are not silently dropped by the
+Group adapter.
+
 ## Observability
 
 `getHostStatus` returns a lock-safe `MultiRaftHostStatus` snapshot containing:

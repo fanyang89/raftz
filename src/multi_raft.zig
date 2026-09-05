@@ -43,6 +43,15 @@ fn currentThreadId() usize {
     return @intCast(std.Thread.getCurrentId());
 }
 
+fn validateGroupLimits(limits: MultiRaftGroupLimits) Error!void {
+    if (limits.max_inbox_messages == 0 or
+        limits.max_inbox_bytes == 0 or
+        limits.max_peer_events == 0)
+    {
+        return error.InvalidConfig;
+    }
+}
+
 fn sleepNanoseconds(nanoseconds: u64) void {
     var request = linux.timespec{
         .sec = std.math.cast(isize, nanoseconds / std.time.ns_per_s) orelse std.math.maxInt(isize),
@@ -77,6 +86,8 @@ pub const MultiRaftConfig = struct {
     max_replica_migration_address_bytes: usize = 4096,
     max_groups: usize = 1024,
     max_group_inbox_messages: usize = 4096,
+    max_group_inbox_bytes: usize = 64 * 1024 * 1024,
+    max_group_peer_events: usize = 1024,
     max_queued_group_operations: usize = 256,
     max_queued_group_operation_bytes: usize = 16 * 1024 * 1024,
     max_queued_group_wakes: usize = 4096,
@@ -90,10 +101,12 @@ pub const MultiRaftConfig = struct {
         if (self.max_replica_migration_address_bytes == 0) return error.InvalidConfig;
         if (self.priority_poll_budget > 0 and self.max_queued_group_wakes == 0) return error.InvalidConfig;
         if (self.max_groups == 0 or self.max_group_inbox_messages == 0) return error.InvalidConfig;
+        if (self.max_group_inbox_bytes == 0 or self.max_group_peer_events == 0) return error.InvalidConfig;
         if (self.max_queued_group_operations == 0 or self.max_queued_group_operation_bytes == 0) return error.InvalidConfig;
     }
 };
 
+pub const MultiRaftGroupLimits = group_config_mod.MultiRaftGroupLimits;
 pub const MultiRaftGroupConfig = group_config_mod.MultiRaftGroupConfig;
 
 pub const GroupLifecycle = enum {
@@ -109,7 +122,14 @@ pub const MultiRaftGroupStatus = struct {
     node: raftor_mod.NodeStatus,
     last_error: ?Error,
     pending_messages: usize,
+    pending_message_bytes: usize,
     pending_peer_events: usize,
+    max_inbox_messages: usize,
+    max_inbox_bytes: usize,
+    max_peer_events: usize,
+    dropped_messages: u64,
+    dropped_message_bytes: u64,
+    dropped_peer_events: u64,
     scheduled_iterations: u64,
     productive_iterations: u64,
     error_iterations: u64,
@@ -159,6 +179,9 @@ pub const MultiRaftHostStatus = struct {
     group_preparation_attempts: u64,
     group_preparation_successes: u64,
     group_preparation_failures: u64,
+    group_message_drops: u64,
+    group_message_drop_bytes: u64,
+    group_peer_event_drops: u64,
 };
 
 pub const GroupPreparationRequest = struct {
@@ -241,6 +264,7 @@ pub const GroupOperationKind = enum {
     remove,
     restart,
     snapshot,
+    update_limits,
 };
 
 pub const GroupOperationResult = struct {
@@ -282,6 +306,11 @@ const GroupOperationCommand = union(GroupOperationKind) {
         group_id: GroupId,
         callback: GroupOperationCallback,
     },
+    update_limits: struct {
+        group_id: GroupId,
+        limits: MultiRaftGroupLimits,
+        callback: GroupOperationCallback,
+    },
 
     fn groupId(self: GroupOperationCommand) GroupId {
         return switch (self) {
@@ -289,6 +318,7 @@ const GroupOperationCommand = union(GroupOperationKind) {
             .remove => |value| value.group_id,
             .restart => |value| value.config.value.group_id,
             .snapshot => |value| value.group_id,
+            .update_limits => |value| value.group_id,
         };
     }
 
@@ -298,6 +328,7 @@ const GroupOperationCommand = union(GroupOperationKind) {
             .remove => |value| value.callback,
             .restart => |value| value.callback,
             .snapshot => |value| value.callback,
+            .update_limits => |value| value.callback,
         };
     }
 
@@ -305,7 +336,7 @@ const GroupOperationCommand = union(GroupOperationKind) {
         switch (self.*) {
             .add => |*value| value.config.deinit(allocator),
             .restart => |*value| value.config.deinit(allocator),
-            .remove, .snapshot => {},
+            .remove, .snapshot, .update_limits => {},
         }
     }
 };
@@ -527,17 +558,51 @@ fn migrationCaughtUp(
     return stable >= migration.required_stable_ticks;
 }
 
+fn retainedMessageBytes(message: Message) usize {
+    var total: usize = @sizeOf(Message);
+    total = retainedAdd(total, retainedMultiply(message.entries.len, @sizeOf(types.Entry)));
+    total = retainedAdd(total, message.context.len);
+    for (message.entries) |entry| {
+        total = retainedAdd(total, entry.data.len);
+        total = retainedAdd(total, entry.context.len);
+    }
+    if (message.snapshot) |snapshot| {
+        total = retainedAdd(total, snapshot.data.len);
+        total = retainedAdd(total, snapshot.membership.len);
+        total = retainedAdd(total, retainedMultiply(snapshot.metadata.conf_state.voters.len, @sizeOf(u64)));
+        total = retainedAdd(total, retainedMultiply(snapshot.metadata.conf_state.learners.len, @sizeOf(u64)));
+        total = retainedAdd(total, retainedMultiply(snapshot.metadata.conf_state.voters_outgoing.len, @sizeOf(u64)));
+        total = retainedAdd(total, retainedMultiply(snapshot.metadata.conf_state.learners_next.len, @sizeOf(u64)));
+    }
+    return total;
+}
+
+fn retainedAdd(left: usize, right: usize) usize {
+    return std.math.add(usize, left, right) catch std.math.maxInt(usize);
+}
+
+fn retainedMultiply(left: usize, right: usize) usize {
+    return std.math.mul(usize, left, right) catch std.math.maxInt(usize);
+}
+
 const GroupTransport = struct {
     group_id: GroupId,
     shared: MultiTransport,
     message_callback: ?MessageCallback = null,
     peer_event_callback: ?PeerEventCallback = null,
     inbox: std.ArrayList(Message) = .empty,
+    snapshot_inbox: ?Message = null,
     peer_events: std.ArrayList(PeerEvent) = .empty,
     peers: std.AutoHashMap(u64, void),
-    max_inbox_messages: usize,
+    max_inbox_messages: std.atomic.Value(usize),
+    max_inbox_bytes: std.atomic.Value(usize),
+    max_peer_events: std.atomic.Value(usize),
     pending_messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    pending_message_bytes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     pending_peer_events: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    dropped_messages: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    dropped_message_bytes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    dropped_peer_events: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     started: bool = false,
     stopped: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     allocator: std.mem.Allocator,
@@ -547,20 +612,36 @@ const GroupTransport = struct {
         group_id: GroupId,
         shared: MultiTransport,
         max_inbox_messages: usize,
+        max_inbox_bytes: usize,
+        max_peer_events: usize,
     ) GroupTransport {
         return .{
             .group_id = group_id,
             .shared = shared,
             .peers = std.AutoHashMap(u64, void).init(allocator),
-            .max_inbox_messages = max_inbox_messages,
+            .max_inbox_messages = std.atomic.Value(usize).init(max_inbox_messages),
+            .max_inbox_bytes = std.atomic.Value(usize).init(max_inbox_bytes),
+            .max_peer_events = std.atomic.Value(usize).init(max_peer_events),
             .allocator = allocator,
         };
+    }
+
+    fn setLimits(
+        self: *GroupTransport,
+        max_inbox_messages: usize,
+        max_inbox_bytes: usize,
+        max_peer_events: usize,
+    ) void {
+        self.max_inbox_messages.store(max_inbox_messages, .release);
+        self.max_inbox_bytes.store(max_inbox_bytes, .release);
+        self.max_peer_events.store(max_peer_events, .release);
     }
 
     fn deinit(self: *GroupTransport) void {
         self.releasePeers();
         for (self.inbox.items) |*message| message.deinit(self.allocator);
         self.inbox.deinit(self.allocator);
+        if (self.snapshot_inbox) |*message| message.deinit(self.allocator);
         self.peer_events.deinit(self.allocator);
         self.peers.deinit();
         self.* = undefined;
@@ -578,11 +659,36 @@ const GroupTransport = struct {
                 return;
             }
         }
+        const message_bytes = retainedMessageBytes(message);
         const stopped = self.stopped.load(.acquire);
-        if (stopped or self.inbox.items.len >= self.max_inbox_messages) {
+        if (stopped) {
             var owned = message;
             owned.deinit(self.allocator);
-            return if (stopped) error.ShuttingDown else error.TransportBackpressure;
+            return error.ShuttingDown;
+        }
+        if (message.msg_type == .snapshot) {
+            if (self.snapshot_inbox) |*previous| {
+                const previous_bytes = retainedMessageBytes(previous.*);
+                previous.deinit(self.allocator);
+                _ = self.pending_message_bytes.fetchSub(previous_bytes, .release);
+                _ = self.dropped_messages.fetchAdd(1, .monotonic);
+                _ = self.dropped_message_bytes.fetchAdd(std.math.cast(u64, previous_bytes) orelse std.math.maxInt(u64), .monotonic);
+            } else {
+                _ = self.pending_messages.fetchAdd(1, .release);
+            }
+            self.snapshot_inbox = message;
+            _ = self.pending_message_bytes.fetchAdd(message_bytes, .release);
+            return;
+        }
+        const pending_bytes = self.pending_message_bytes.load(.acquire);
+        if (self.inbox.items.len >= self.max_inbox_messages.load(.acquire) or
+            message_bytes > self.max_inbox_bytes.load(.acquire) -| pending_bytes)
+        {
+            _ = self.dropped_messages.fetchAdd(1, .monotonic);
+            _ = self.dropped_message_bytes.fetchAdd(std.math.cast(u64, message_bytes) orelse std.math.maxInt(u64), .monotonic);
+            var owned = message;
+            owned.deinit(self.allocator);
+            return error.TransportBackpressure;
         }
         self.inbox.append(self.allocator, message) catch |err| {
             var owned = message;
@@ -590,12 +696,15 @@ const GroupTransport = struct {
             return err;
         };
         _ = self.pending_messages.fetchAdd(1, .release);
+        _ = self.pending_message_bytes.fetchAdd(message_bytes, .release);
     }
 
     fn enqueuePeerEvent(self: *GroupTransport, event: PeerEvent) Error!void {
         const stopped = self.stopped.load(.acquire);
-        if (stopped or self.peer_events.items.len >= self.max_inbox_messages) {
-            return if (stopped) error.ShuttingDown else error.TransportBackpressure;
+        if (stopped) return error.ShuttingDown;
+        if (self.peer_events.items.len >= self.max_peer_events.load(.acquire)) {
+            _ = self.dropped_peer_events.fetchAdd(1, .monotonic);
+            return error.TransportBackpressure;
         }
         try self.peer_events.append(self.allocator, event);
         _ = self.pending_peer_events.fetchAdd(1, .release);
@@ -658,10 +767,21 @@ const GroupTransport = struct {
     fn pollOneImpl(ctx: *anyopaque) Error!bool {
         const self: *GroupTransport = @ptrCast(@alignCast(ctx));
         if (self.stopped.load(.acquire)) return false;
+        if (self.snapshot_inbox) |message| {
+            const callback = self.message_callback orelse return false;
+            self.snapshot_inbox = null;
+            const message_bytes = retainedMessageBytes(message);
+            _ = self.pending_messages.fetchSub(1, .release);
+            _ = self.pending_message_bytes.fetchSub(message_bytes, .release);
+            try callback.invoke(message);
+            return true;
+        }
         if (self.inbox.items.len != 0) {
             const callback = self.message_callback orelse return false;
             const message = self.inbox.orderedRemove(0);
+            const message_bytes = retainedMessageBytes(message);
             _ = self.pending_messages.fetchSub(1, .release);
+            _ = self.pending_message_bytes.fetchSub(message_bytes, .release);
             try callback.invoke(message);
             return true;
         }
@@ -765,7 +885,9 @@ const Group = struct {
                 allocator,
                 owned_config.value.group_id,
                 shared_transport,
-                host_config.max_group_inbox_messages,
+                @min(owned_config.value.limits.max_inbox_messages orelse host_config.max_group_inbox_messages, host_config.max_group_inbox_messages),
+                @min(owned_config.value.limits.max_inbox_bytes orelse host_config.max_group_inbox_bytes, host_config.max_group_inbox_bytes),
+                @min(owned_config.value.limits.max_peer_events orelse host_config.max_group_peer_events, host_config.max_group_peer_events),
             ),
             .raftor = undefined,
             .data_dir = data_dir,
@@ -878,7 +1000,14 @@ fn makeGroupStatus(group: *Group) MultiRaftGroupStatus {
         .node = group.raftor.getStatus(),
         .last_error = status.last_error,
         .pending_messages = group.transport.pending_messages.load(.acquire),
+        .pending_message_bytes = group.transport.pending_message_bytes.load(.acquire),
         .pending_peer_events = group.transport.pending_peer_events.load(.acquire),
+        .max_inbox_messages = group.transport.max_inbox_messages.load(.acquire),
+        .max_inbox_bytes = group.transport.max_inbox_bytes.load(.acquire),
+        .max_peer_events = group.transport.max_peer_events.load(.acquire),
+        .dropped_messages = group.transport.dropped_messages.load(.acquire),
+        .dropped_message_bytes = group.transport.dropped_message_bytes.load(.acquire),
+        .dropped_peer_events = group.transport.dropped_peer_events.load(.acquire),
         .scheduled_iterations = group.scheduled_iterations.load(.acquire),
         .productive_iterations = group.productive_iterations.load(.acquire),
         .error_iterations = group.error_iterations.load(.acquire),
@@ -946,6 +1075,9 @@ pub const MultiRaftHost = struct {
     group_preparation_attempts: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     group_preparation_successes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     group_preparation_failures: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    group_message_drops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    group_message_drop_bytes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    group_peer_event_drops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -1130,6 +1262,22 @@ pub const MultiRaftHost = struct {
         if (group_id == 0) return error.InvalidGroupId;
         try self.enqueueGroupOperation(.{ .snapshot = .{
             .group_id = group_id,
+            .callback = callback,
+        } }, 0);
+    }
+
+    /// Queue an update to one Group's effective ingress limits.
+    pub fn requestUpdateGroupLimits(
+        self: *MultiRaftHost,
+        group_id: GroupId,
+        limits: MultiRaftGroupLimits,
+        callback: GroupOperationCallback,
+    ) Error!void {
+        if (group_id == 0) return error.InvalidGroupId;
+        try validateGroupLimits(limits);
+        try self.enqueueGroupOperation(.{ .update_limits = .{
+            .group_id = group_id,
+            .limits = limits,
             .callback = callback,
         } }, 0);
     }
@@ -1457,6 +1605,9 @@ pub const MultiRaftHost = struct {
             .group_preparation_attempts = self.group_preparation_attempts.load(.acquire),
             .group_preparation_successes = self.group_preparation_successes.load(.acquire),
             .group_preparation_failures = self.group_preparation_failures.load(.acquire),
+            .group_message_drops = self.group_message_drops.load(.acquire),
+            .group_message_drop_bytes = self.group_message_drop_bytes.load(.acquire),
+            .group_peer_event_drops = self.group_peer_event_drops.load(.acquire),
         };
         const mutex = @constCast(&self.groups_mutex);
         spinLock(mutex);
@@ -1967,6 +2118,7 @@ pub const MultiRaftHost = struct {
                 .remove => |value| if (self.removeGroupInternal(value.group_id)) |_| null else |err| err,
                 .restart => |*value| if (self.restartGroupOwned(&value.config, value.state_machine)) |_| null else |err| err,
                 .snapshot => |value| if (self.takeGroupSnapshot(value.group_id)) |_| null else |err| err,
+                .update_limits => |value| if (self.updateGroupLimits(value.group_id, value.limits)) |_| null else |err| err,
             };
             _ = self.group_operations_completed.fetchAdd(1, .monotonic);
             if (operation_error != null) _ = self.group_operations_failed.fetchAdd(1, .monotonic);
@@ -2064,6 +2216,24 @@ pub const MultiRaftHost = struct {
         }
     }
 
+    fn updateGroupLimits(
+        self: *MultiRaftHost,
+        group_id: GroupId,
+        limits: MultiRaftGroupLimits,
+    ) Error!void {
+        spinLock(&self.groups_mutex);
+        const group = self.groups.get(group_id) orelse {
+            self.groups_mutex.unlock();
+            return error.GroupNotFound;
+        };
+        self.groups_mutex.unlock();
+        group.transport.setLimits(
+            @min(limits.max_inbox_messages orelse self.config.max_group_inbox_messages, self.config.max_group_inbox_messages),
+            @min(limits.max_inbox_bytes orelse self.config.max_group_inbox_bytes, self.config.max_group_inbox_bytes),
+            @min(limits.max_peer_events orelse self.config.max_group_peer_events, self.config.max_group_peer_events),
+        );
+    }
+
     fn takeGroupSnapshot(self: *MultiRaftHost, group_id: GroupId) Error!void {
         spinLock(&self.groups_mutex);
         const group = self.groups.get(group_id) orelse {
@@ -2121,6 +2291,7 @@ pub const MultiRaftHost = struct {
         if (config.group_id == 0) return error.InvalidGroupId;
         if (config.raftor.nodeId() != self.config.node_id) return error.InvalidNodeId;
         if (config.raftor.data_dir.len != 0 or config.raftor.file_system != null) return error.InvalidConfig;
+        try validateGroupLimits(config.limits);
     }
 
     fn onEnvelope(ctx: *anyopaque, envelope: Envelope) Error!void {
@@ -2142,9 +2313,34 @@ pub const MultiRaftHost = struct {
             }
             return;
         };
-        try group.transport.enqueueMessage(envelope.message);
+        const dropped_messages = group.transport.dropped_messages.load(.acquire);
+        const dropped_bytes = group.transport.dropped_message_bytes.load(.acquire);
+        group.transport.enqueueMessage(envelope.message) catch |err| {
+            self.recordGroupMessageDrops(group, dropped_messages, dropped_bytes);
+            switch (err) {
+                error.TransportBackpressure, error.ShuttingDown => return,
+                else => return err,
+            }
+        };
+        self.recordGroupMessageDrops(group, dropped_messages, dropped_bytes);
         self.requestGroupWake(group);
         _ = self.envelopes_routed.fetchAdd(1, .monotonic);
+    }
+
+    fn recordGroupMessageDrops(
+        self: *MultiRaftHost,
+        group: *Group,
+        previous_messages: u64,
+        previous_bytes: u64,
+    ) void {
+        const current_messages = group.transport.dropped_messages.load(.acquire);
+        const current_bytes = group.transport.dropped_message_bytes.load(.acquire);
+        if (current_messages > previous_messages) {
+            _ = self.group_message_drops.fetchAdd(current_messages - previous_messages, .monotonic);
+        }
+        if (current_bytes > previous_bytes) {
+            _ = self.group_message_drop_bytes.fetchAdd(current_bytes - previous_bytes, .monotonic);
+        }
     }
 
     fn prepareUnknownGroup(
@@ -2200,7 +2396,14 @@ pub const MultiRaftHost = struct {
     fn onPeerEvent(ctx: *anyopaque, event: MultiPeerEvent) Error!void {
         const self: *MultiRaftHost = @ptrCast(@alignCast(ctx));
         const group = self.groups.get(event.group_id) orelse return;
-        try group.transport.enqueuePeerEvent(.{ .peer_id = event.peer_id, .kind = event.kind });
+        group.transport.enqueuePeerEvent(.{ .peer_id = event.peer_id, .kind = event.kind }) catch |err| switch (err) {
+            error.TransportBackpressure => {
+                _ = self.group_peer_event_drops.fetchAdd(1, .monotonic);
+                return;
+            },
+            error.ShuttingDown => return,
+            else => return err,
+        };
         self.requestGroupWake(group);
         _ = self.peer_events_routed.fetchAdd(1, .monotonic);
     }

@@ -72,6 +72,8 @@ test "multi raft metrics: Prometheus exposition is typed and labeled" {
     try std.testing.expect(std.mem.indexOf(u8, encoded, "group_id=\"501\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "lifecycle=\"active\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "role=\"leader\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "raftz_multi_raft_group_limit_bytes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "raftz_multi_raft_group_dropped_bytes_total") != null);
 
     var metadata = std.StringHashMap(void).init(allocator);
     defer metadata.deinit();

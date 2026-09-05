@@ -111,7 +111,7 @@ implementing a feature outside the current decision.
 | Cap'n Proto wire format            | Out of scope  | Zig structs + grpc-lite framing                                             |
 | Seastar integration                | Out of scope  | Not applicable in Zig                                                       |
 | io_uring WAL backend               | Selected      | Planned Linux-only backend; not implemented                                 |
-| Multi-tenant raft groups           | Selected      | Cooperative Host, per-group WAL, target preparation, durable replica migration |
+| Multi-tenant raft groups           | Selected      | Per-group quotas/WAL, target preparation, durable replica migration             |
 
 ## MCP usage
 

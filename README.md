@@ -115,7 +115,7 @@ for the processing order and ownership contracts.
 | Linux x86_64 and arm64 | Continuously tested in Debug and ReleaseSafe |
 | Core Raft, ReadIndex, learners, joint consensus | Supported |
 | MemoryStorage, WAL, snapshots, restart | Supported |
-| Multi-Raft scheduling, target preparation, durable migration, and metrics | Supported MVP |
+| Multi-Raft quotas, scheduling, durable migration, and metrics | Supported MVP |
 | Multiplexed grpc-lite MultiTransport backend | Supported |
 | grpc-lite authentication and TLS | Not provided by raftz |
 | Multi-tenant group hosting, disaster-recovery import | Out of scope or not implemented |

@@ -35,7 +35,9 @@ intent under their data directory. After restart,
 workflow once its Group and callback are available. Targets can pre-create a
 join-mode Group or install `GroupPreparer` through `setGroupPreparer`; the first
 unknown-group Raft envelope then creates the validated Group and learner catch-up
-confirms readiness. Hosts automatically stop locally
+confirms readiness. `MultiRaftGroupConfig.limits` lowers Host message-count,
+message-byte, and peer-event ceilings; `requestUpdateGroupLimits` changes them
+through the runtime management queue. Hosts automatically stop locally
 retired Groups after a committed removal while preserving their WAL.
 `getHostStatus`, `getStatus`, and
 `listGroupStatuses` expose lock-safe host, scheduler, queue, and per-group

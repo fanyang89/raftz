@@ -12,9 +12,16 @@ const LegacyMembershipMigration = raftor_config_mod.LegacyMembershipMigration;
 const LegacySnapshotMembership = raftor_config_mod.LegacySnapshotMembership;
 const GroupId = multi_transport_mod.GroupId;
 
+pub const MultiRaftGroupLimits = struct {
+    max_inbox_messages: ?usize = null,
+    max_inbox_bytes: ?usize = null,
+    max_peer_events: ?usize = null,
+};
+
 pub const MultiRaftGroupConfig = struct {
     group_id: GroupId,
     raftor: RaftorConfig,
+    limits: MultiRaftGroupLimits = .{},
 };
 
 pub const OwnedGroupConfig = struct {

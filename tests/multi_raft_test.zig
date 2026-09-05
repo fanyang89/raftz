@@ -181,6 +181,9 @@ test "multi raft: validates priority wake configuration" {
     config.migration_step_budget = 1;
     config.group_preparation_budget = 0;
     try std.testing.expectError(error.InvalidConfig, config.validate());
+    config.group_preparation_budget = 1;
+    config.max_group_inbox_bytes = 0;
+    try std.testing.expectError(error.InvalidConfig, config.validate());
 }
 
 test "multi raft: validates and manages group lifecycle" {
@@ -423,6 +426,120 @@ test "multi raft: host and group status expose scheduler activity" {
         try std.testing.expect(group.productive_iterations > 0);
         try std.testing.expect(group.last_host_iteration > 0);
     }
+}
+
+test "multi raft: per-Group ingress quotas isolate message and peer-event floods" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const source = try network.createTransport(1);
+    const target = try network.createTransport(2);
+    const host = try raft.MultiRaftHost.create(allocator, .{
+        .node_id = 2,
+        .group_drive_budget = 1,
+        .priority_poll_budget = 0,
+        .max_group_inbox_messages = 2,
+        .max_group_inbox_bytes = 4096,
+        .max_group_peer_events = 2,
+    }, target.transport());
+    defer host.destroy();
+    var first_machine = raft.MockStateMachine.init(allocator);
+    defer first_machine.deinit();
+    var second_machine = raft.MockStateMachine.init(allocator);
+    defer second_machine.deinit();
+    var third_machine = raft.MockStateMachine.init(allocator);
+    defer third_machine.deinit();
+    var snapshot_machine = raft.MockStateMachine.init(allocator);
+    defer snapshot_machine.deinit();
+    const peers = [_]raft.Peer{ .{ .id = 1 }, .{ .id = 2 } };
+    var first_config = groupConfig(601, 2, &peers);
+    first_config.limits = .{
+        .max_inbox_messages = 1,
+        .max_inbox_bytes = 4096,
+        .max_peer_events = 1,
+    };
+    var second_config = groupConfig(602, 2, &peers);
+    second_config.limits.max_inbox_messages = 100;
+    var third_config = groupConfig(603, 2, &peers);
+    third_config.limits.max_inbox_bytes = 1;
+    var invalid_config = groupConfig(604, 2, &peers);
+    invalid_config.limits.max_peer_events = 0;
+    var snapshot_config = groupConfig(605, 2, &peers);
+    snapshot_config.limits = .{ .max_inbox_messages = 1, .max_inbox_bytes = 1 };
+    try std.testing.expectError(error.InvalidConfig, host.addGroup(invalid_config, third_machine.stateMachine()));
+    try host.addGroup(first_config, first_machine.stateMachine());
+    try host.addGroup(second_config, second_machine.stateMachine());
+    try host.addGroup(third_config, third_machine.stateMachine());
+    try host.addGroup(snapshot_config, snapshot_machine.stateMachine());
+    var snapshot_voters = [_]u64{ 1, 2 };
+    var first_snapshot_data = [_]u8{'a'};
+    var second_snapshot_data = [_]u8{'b'};
+
+    try source.transport().send(&.{
+        .{ .group_id = 601, .message = .{ .msg_type = .heartbeat, .from = 1, .to = 2 } },
+        .{ .group_id = 601, .message = .{ .msg_type = .heartbeat, .from = 1, .to = 2 } },
+        .{ .group_id = 602, .message = .{ .msg_type = .heartbeat, .from = 1, .to = 2 } },
+        .{ .group_id = 603, .message = .{ .msg_type = .heartbeat, .from = 1, .to = 2 } },
+        .{ .group_id = 605, .message = .{
+            .msg_type = .snapshot,
+            .from = 1,
+            .to = 2,
+            .snapshot = .{
+                .data = &first_snapshot_data,
+                .metadata = .{ .index = 1, .term = 1, .conf_state = .{ .voters = &snapshot_voters } },
+            },
+        } },
+        .{ .group_id = 605, .message = .{
+            .msg_type = .snapshot,
+            .from = 1,
+            .to = 2,
+            .snapshot = .{
+                .data = &second_snapshot_data,
+                .metadata = .{ .index = 2, .term = 1, .conf_state = .{ .voters = &snapshot_voters } },
+            },
+        } },
+    });
+    try target.emitPeerEvent(.{ .group_id = 601, .peer_id = 1, .kind = .@"unreachable" });
+    try target.emitPeerEvent(.{ .group_id = 601, .peer_id = 1, .kind = .@"unreachable" });
+    try std.testing.expect(try host.poll());
+
+    const first = host.getStatus(601).?;
+    const second = host.getStatus(602).?;
+    const third = host.getStatus(603).?;
+    const snapshot = host.getStatus(605).?;
+    try std.testing.expectEqual(@as(usize, 1), first.max_inbox_messages);
+    try std.testing.expectEqual(@as(usize, 4096), first.max_inbox_bytes);
+    try std.testing.expectEqual(@as(usize, 1), first.max_peer_events);
+    try std.testing.expectEqual(@as(usize, 2), second.max_inbox_messages);
+    try std.testing.expectEqual(@as(u64, 1), first.dropped_messages);
+    try std.testing.expect(first.dropped_message_bytes > 0);
+    try std.testing.expectEqual(@as(u64, 1), first.dropped_peer_events);
+    try std.testing.expectEqual(@as(usize, 1), second.pending_messages);
+    try std.testing.expect(second.pending_message_bytes > 0);
+    try std.testing.expectEqual(@as(u64, 0), second.dropped_messages);
+    try std.testing.expectEqual(@as(u64, 1), third.dropped_messages);
+    try std.testing.expectEqual(@as(usize, 0), third.pending_messages);
+    try std.testing.expectEqual(@as(usize, 1), snapshot.pending_messages);
+    try std.testing.expect(snapshot.pending_message_bytes > snapshot.max_inbox_bytes);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.dropped_messages);
+    const host_status = host.getHostStatus();
+    try std.testing.expectEqual(@as(u64, 3), host_status.group_message_drops);
+    try std.testing.expect(host_status.group_message_drop_bytes > 0);
+    try std.testing.expectEqual(@as(u64, 1), host_status.group_peer_event_drops);
+
+    var updated = GroupOperationCapture{};
+    try host.requestUpdateGroupLimits(602, .{ .max_inbox_messages = 1 }, updated.callback());
+    _ = try host.poll();
+    try std.testing.expect(updated.completed.load(.acquire));
+    try std.testing.expectEqual(raft.GroupOperationKind.update_limits, updated.result.operation);
+    try std.testing.expect(updated.result.err == null);
+    try std.testing.expectEqual(@as(usize, 1), host.getStatus(602).?.max_inbox_messages);
+    try std.testing.expectEqual(@as(usize, 0), host.getStatus(602).?.pending_messages);
+    try std.testing.expectEqual(@as(usize, 0), host.getStatus(602).?.pending_message_bytes);
+
+    var reset = GroupOperationCapture{};
+    try host.requestUpdateGroupLimits(602, .{}, reset.callback());
+    _ = try host.poll();
+    try std.testing.expectEqual(@as(usize, 2), host.getStatus(602).?.max_inbox_messages);
 }
 
 test "multi raft: pending envelope metrics follow round-robin delivery" {

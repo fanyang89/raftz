@@ -68,7 +68,8 @@ Per-Group families cover:
 - lifecycle, role, preparation, and retirement information
 - term, leader, commit, applied, and incarnation values
 - proposal, read-index, message, and peer-event backlog
-- queue bytes
+- effective ingress limits and retained message bytes
+- quota drop counts and dropped-byte totals
 - scheduling and snapshot counters
 
 `node_id` is present on every point. Per-Group points also include `group_id`.

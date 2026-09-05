@@ -115,6 +115,13 @@ const preparation_events = MetricDescriptor{
     .description = "Cumulative target Group preparation events.",
     .kind = .counter,
 };
+const host_drop_bytes = MetricDescriptor{
+    .name = "raftz.multi_raft.dropped.bytes",
+    .prometheus_name = "raftz_multi_raft_dropped_bytes_total",
+    .description = "Cumulative bytes dropped by Group ingress quotas.",
+    .unit = "By",
+    .kind = .counter,
+};
 const host_events = MetricDescriptor{
     .name = "raftz.multi_raft.host.events",
     .prometheus_name = "raftz_multi_raft_host_events_total",
@@ -139,6 +146,19 @@ const group_pending_items = MetricDescriptor{
     .description = "Items pending in one Raft group.",
     .kind = .gauge,
 };
+const group_limit_items = MetricDescriptor{
+    .name = "raftz.multi_raft.group.limit.items",
+    .prometheus_name = "raftz_multi_raft_group_limit_items",
+    .description = "Effective item limit for one Raft group ingress resource.",
+    .kind = .gauge,
+};
+const group_limit_bytes = MetricDescriptor{
+    .name = "raftz.multi_raft.group.limit.bytes",
+    .prometheus_name = "raftz_multi_raft_group_limit_bytes",
+    .description = "Effective byte limit for one Raft group message inbox.",
+    .unit = "By",
+    .kind = .gauge,
+};
 const group_pending_bytes = MetricDescriptor{
     .name = "raftz.multi_raft.group.pending.bytes",
     .prometheus_name = "raftz_multi_raft_group_pending_bytes",
@@ -150,6 +170,19 @@ const group_scheduling = MetricDescriptor{
     .name = "raftz.multi_raft.group.scheduling.events",
     .prometheus_name = "raftz_multi_raft_group_scheduling_events_total",
     .description = "Cumulative scheduling events for one Raft group.",
+    .kind = .counter,
+};
+const group_transport_events = MetricDescriptor{
+    .name = "raftz.multi_raft.group.transport.events",
+    .prometheus_name = "raftz_multi_raft_group_transport_events_total",
+    .description = "Cumulative ingress quota drops for one Raft group.",
+    .kind = .counter,
+};
+const group_drop_bytes = MetricDescriptor{
+    .name = "raftz.multi_raft.group.dropped.bytes",
+    .prometheus_name = "raftz_multi_raft_group_dropped_bytes_total",
+    .description = "Cumulative message bytes dropped by one Group ingress quota.",
+    .unit = "By",
     .kind = .counter,
 };
 const group_last_iteration = MetricDescriptor{
@@ -238,6 +271,9 @@ fn emitAll(
 
     try emitHost(sink, host_events, host.node_id, host.unknown_group_messages, &.{stringAttribute("event", "unknown_group_message")});
     try emitHost(sink, host_events, host.node_id, host.local_group_retirements, &.{stringAttribute("event", "local_group_retirement")});
+    try emitHost(sink, host_events, host.node_id, host.group_message_drops, &.{stringAttribute("event", "group_message_dropped")});
+    try emitHost(sink, host_events, host.node_id, host.group_peer_event_drops, &.{stringAttribute("event", "group_peer_event_dropped")});
+    try emitHost(sink, host_drop_bytes, host.node_id, host.group_message_drop_bytes, &.{stringAttribute("kind", "group_message")});
 
     for (groups) |group| try emitGroup(group, host.node_id, sink);
 }
@@ -262,6 +298,10 @@ fn emitGroup(group: MultiRaftGroupStatus, node_id: u64, sink: OpenTelemetryMetri
     try emitGroupPoint(sink, group_pending_items, node_id, group.group_id, group.node.pending_proposals, &.{stringAttribute("kind", "pending_proposals")});
     try emitGroupPoint(sink, group_pending_items, node_id, group.group_id, group.node.queued_proposals, &.{stringAttribute("kind", "queued_proposals")});
     try emitGroupPoint(sink, group_pending_items, node_id, group.group_id, group.node.queued_read_indexes, &.{stringAttribute("kind", "queued_read_indexes")});
+    try emitGroupPoint(sink, group_limit_items, node_id, group.group_id, group.max_inbox_messages, &.{stringAttribute("kind", "messages")});
+    try emitGroupPoint(sink, group_limit_items, node_id, group.group_id, group.max_peer_events, &.{stringAttribute("kind", "peer_events")});
+    try emitGroupPoint(sink, group_limit_bytes, node_id, group.group_id, group.max_inbox_bytes, &.{stringAttribute("kind", "messages")});
+    try emitGroupPoint(sink, group_pending_bytes, node_id, group.group_id, group.pending_message_bytes, &.{stringAttribute("kind", "messages")});
     try emitGroupPoint(sink, group_pending_bytes, node_id, group.group_id, group.node.queued_proposal_bytes, &.{stringAttribute("kind", "proposals")});
     try emitGroupPoint(sink, group_pending_bytes, node_id, group.group_id, group.node.queued_read_index_bytes, &.{stringAttribute("kind", "read_indexes")});
 
@@ -270,6 +310,9 @@ fn emitGroup(group: MultiRaftGroupStatus, node_id: u64, sink: OpenTelemetryMetri
     try emitGroupPoint(sink, group_scheduling, node_id, group.group_id, group.error_iterations, &.{stringAttribute("event", "error")});
     try emitGroupPoint(sink, group_scheduling, node_id, group.group_id, group.priority_polls, &.{stringAttribute("event", "priority_poll")});
     try emitGroupPoint(sink, group_last_iteration, node_id, group.group_id, group.last_host_iteration, &.{});
+    try emitGroupPoint(sink, group_transport_events, node_id, group.group_id, group.dropped_messages, &.{stringAttribute("event", "message_dropped")});
+    try emitGroupPoint(sink, group_transport_events, node_id, group.group_id, group.dropped_peer_events, &.{stringAttribute("event", "peer_event_dropped")});
+    try emitGroupPoint(sink, group_drop_bytes, node_id, group.group_id, group.dropped_message_bytes, &.{stringAttribute("kind", "message")});
 
     try emitGroupPoint(sink, snapshot_events, node_id, group.group_id, group.snapshot_attempts, &.{stringAttribute("event", "attempt")});
     try emitGroupPoint(sink, snapshot_events, node_id, group.group_id, group.snapshot_successes, &.{stringAttribute("event", "success")});

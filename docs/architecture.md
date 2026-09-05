@@ -117,7 +117,8 @@ Raft catch-up provides readiness confirmation. Durable Hosts journal migration
 intent with atomic replacement and recover it after restart. Hosts stop locally
 retired Groups only after previously observing their local node in that Group's
 membership. Atomic counters and registry locks expose host and per-group status
-through Prometheus text and OpenTelemetry sink adapters without moving Raft
+through Prometheus text and OpenTelemetry sink adapters. Per-Group ingress
+limits bound message count, retained bytes, and peer events without moving Raft
 mutation off
 the event thread. Terminal
 errors are recorded per group and do not stop healthy groups. See
