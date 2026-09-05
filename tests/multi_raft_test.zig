@@ -3,6 +3,15 @@ const raft = @import("raftz");
 
 const allocator = std.testing.allocator;
 
+fn dropMigrationTarget(
+    group_id: raft.GroupId,
+    _: u64,
+    to: u64,
+    _: raft.MessageType,
+) bool {
+    return group_id == 96 and to == 3;
+}
+
 const FailingStateMachine = struct {
     inner: *raft.MockStateMachine,
     fail_data: []const u8,
@@ -69,6 +78,36 @@ const GroupOperationCapture = struct {
     }
 };
 
+const ReplicaMigrationCapture = struct {
+    completed: bool = false,
+    result: raft.ReplicaMigrationResult = undefined,
+
+    fn invoke(ctx: *anyopaque, result: raft.ReplicaMigrationResult) void {
+        const self: *ReplicaMigrationCapture = @ptrCast(@alignCast(ctx));
+        self.completed = true;
+        self.result = result;
+    }
+
+    fn callback(self: *ReplicaMigrationCapture) raft.ReplicaMigrationCallback {
+        return .{ .ctx = self, .function = invoke };
+    }
+};
+
+const ConcurrentMigrationCapture = struct {
+    completed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    result: raft.ReplicaMigrationResult = undefined,
+
+    fn invoke(ctx: *anyopaque, result: raft.ReplicaMigrationResult) void {
+        const self: *ConcurrentMigrationCapture = @ptrCast(@alignCast(ctx));
+        self.result = result;
+        self.completed.store(true, .release);
+    }
+
+    fn callback(self: *ConcurrentMigrationCapture) raft.ReplicaMigrationCallback {
+        return .{ .ctx = self, .function = invoke };
+    }
+};
+
 const ProposalResult = struct {
     completed: bool = false,
     err: ?raft.Error = null,
@@ -117,6 +156,8 @@ test "multi raft: validates priority wake configuration" {
     try std.testing.expectError(error.InvalidConfig, config.validate());
     config.priority_poll_budget = 0;
     try config.validate();
+    config.migration_step_budget = 0;
+    try std.testing.expectError(error.InvalidConfig, config.validate());
 }
 
 test "multi raft: validates and manages group lifecycle" {
@@ -490,6 +531,269 @@ test "multi raft: runtime manual snapshot completes through operation callback" 
     try std.testing.expectEqual(@as(u64, 1), host.getStatus(90).?.snapshot_successes);
 }
 
+test "multi raft: online replica migration replaces a voter" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport_one = try network.createTransport(1);
+    const transport_two = try network.createTransport(2);
+    const transport_three = try network.createTransport(3);
+    const host_one = try raft.MultiRaftHost.create(allocator, .{ .node_id = 1 }, transport_one.transport());
+    defer host_one.destroy();
+    const host_two = try raft.MultiRaftHost.create(allocator, .{ .node_id = 2 }, transport_two.transport());
+    defer host_two.destroy();
+    const host_three = try raft.MultiRaftHost.create(allocator, .{ .node_id = 3 }, transport_three.transport());
+    defer host_three.destroy();
+    var machine_one = raft.MockStateMachine.init(allocator);
+    defer machine_one.deinit();
+    var machine_two = raft.MockStateMachine.init(allocator);
+    defer machine_two.deinit();
+    var machine_three = raft.MockStateMachine.init(allocator);
+    defer machine_three.deinit();
+    const cluster_id = [_]u8{0x95} ** 16;
+    const initial_peers = [_]raft.Peer{
+        .{ .id = 1, .context = "node-1" },
+        .{ .id = 2, .context = "node-2" },
+    };
+    var first_config = groupConfig(95, 1, &initial_peers);
+    first_config.raftor.cluster_id = cluster_id;
+    var second_config = groupConfig(95, 2, &initial_peers);
+    second_config.raftor.cluster_id = cluster_id;
+    try host_one.addGroup(first_config, machine_one.stateMachine());
+    try host_two.addGroup(second_config, machine_two.stateMachine());
+    var joining_config = groupConfig(95, 3, &initial_peers);
+    joining_config.raftor.cluster_id = cluster_id;
+    joining_config.raftor.listen_addr = "node-3";
+    joining_config.raftor.join = true;
+    try host_three.addGroup(joining_config, machine_three.stateMachine());
+    try host_one.campaign(95);
+    try drive(&.{ host_one, host_two, host_three }, 20);
+
+    var migration = ReplicaMigrationCapture{};
+    try host_one.requestReplicaMigration(.{
+        .group_id = 95,
+        .source_node_id = 2,
+        .target_node_id = 3,
+        .target_address = "node-3",
+        .timeout_ticks = 200,
+        .stable_catch_up_ticks = 1,
+    }, migration.callback());
+    var iterations: usize = 0;
+    while (!migration.completed and iterations < 200) : (iterations += 1) {
+        try drive(&.{ host_one, host_two, host_three }, 1);
+    }
+
+    try std.testing.expect(migration.completed);
+    try std.testing.expect(migration.result.err == null);
+    try std.testing.expect(host_one.getReplicaMigrationStatus(95) == null);
+    const status = host_one.getHostStatus();
+    try std.testing.expectEqual(@as(u64, 1), status.replica_migrations_started);
+    try std.testing.expectEqual(@as(u64, 1), status.replica_migrations_completed);
+    const leader = host_one.getRaftor(95).?;
+    const probe = try leader.probeReplicaMigration(2, 3, "node-3");
+    try std.testing.expect(probe.source_role == null);
+    try std.testing.expectEqual(raft.MembershipRole.voter, probe.target_role.?);
+
+    var proposal = ProposalResult{};
+    try host_one.propose(95, "after-migration", proposal.callback());
+    iterations = 0;
+    while (!proposal.completed and iterations < 100) : (iterations += 1) {
+        try drive(&.{ host_one, host_two, host_three }, 1);
+    }
+    try std.testing.expect(proposal.completed and proposal.err == null);
+    try drive(&.{ host_one, host_two, host_three }, 5);
+    try std.testing.expectEqualStrings(
+        "after-migration",
+        machine_three.applied.items[machine_three.applied.items.len - 1],
+    );
+}
+
+test "multi raft: migrating the local leader stops its retired group" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport_one = try network.createTransport(1);
+    const transport_two = try network.createTransport(2);
+    const host_one = try raft.MultiRaftHost.create(allocator, .{ .node_id = 1 }, transport_one.transport());
+    defer host_one.destroy();
+    const host_two = try raft.MultiRaftHost.create(allocator, .{ .node_id = 2 }, transport_two.transport());
+    defer host_two.destroy();
+    var machine_one = raft.MockStateMachine.init(allocator);
+    defer machine_one.deinit();
+    var machine_two = raft.MockStateMachine.init(allocator);
+    defer machine_two.deinit();
+    const cluster_id = [_]u8{0x94} ** 16;
+    const initial_peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
+    var source_config = groupConfig(94, 1, &initial_peers);
+    source_config.raftor.cluster_id = cluster_id;
+    var target_config = groupConfig(94, 2, &initial_peers);
+    target_config.raftor.cluster_id = cluster_id;
+    target_config.raftor.listen_addr = "node-2";
+    target_config.raftor.join = true;
+    try host_one.addGroup(source_config, machine_one.stateMachine());
+    try host_two.addGroup(target_config, machine_two.stateMachine());
+    try host_one.campaign(94);
+    try drive(&.{ host_one, host_two }, 10);
+
+    var migration = ReplicaMigrationCapture{};
+    try host_one.requestReplicaMigration(.{
+        .group_id = 94,
+        .source_node_id = 1,
+        .target_node_id = 2,
+        .target_address = "node-2",
+        .timeout_ticks = 100,
+        .stable_catch_up_ticks = 1,
+    }, migration.callback());
+    var iterations: usize = 0;
+    while (!migration.completed and iterations < 100) : (iterations += 1) {
+        try drive(&.{ host_one, host_two }, 1);
+    }
+
+    try std.testing.expect(migration.completed and migration.result.err == null);
+    try std.testing.expectEqual(raft.MultiRaftGroupLifecycle.stopping, host_one.getStatus(94).?.lifecycle);
+    try host_two.campaign(94);
+    try drive(&.{host_two}, 10);
+    try std.testing.expectEqual(raft.StateRole.leader, host_two.getStatus(94).?.node.role);
+}
+
+test "multi raft: migration timeout preserves the safe intermediate membership" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    network.drop_filter = dropMigrationTarget;
+    const transport_one = try network.createTransport(1);
+    const transport_two = try network.createTransport(2);
+    const transport_three = try network.createTransport(3);
+    const host_one = try raft.MultiRaftHost.create(allocator, .{ .node_id = 1 }, transport_one.transport());
+    defer host_one.destroy();
+    const host_two = try raft.MultiRaftHost.create(allocator, .{ .node_id = 2 }, transport_two.transport());
+    defer host_two.destroy();
+    const host_three = try raft.MultiRaftHost.create(allocator, .{ .node_id = 3 }, transport_three.transport());
+    defer host_three.destroy();
+    var machine_one = raft.MockStateMachine.init(allocator);
+    defer machine_one.deinit();
+    var machine_two = raft.MockStateMachine.init(allocator);
+    defer machine_two.deinit();
+    var machine_three = raft.MockStateMachine.init(allocator);
+    defer machine_three.deinit();
+    const cluster_id = [_]u8{0x96} ** 16;
+    const initial_peers = [_]raft.Peer{
+        .{ .id = 1, .context = "node-1" },
+        .{ .id = 2, .context = "node-2" },
+    };
+    var first_config = groupConfig(96, 1, &initial_peers);
+    first_config.raftor.cluster_id = cluster_id;
+    var second_config = groupConfig(96, 2, &initial_peers);
+    second_config.raftor.cluster_id = cluster_id;
+    var joining_config = groupConfig(96, 3, &initial_peers);
+    joining_config.raftor.cluster_id = cluster_id;
+    joining_config.raftor.listen_addr = "node-3";
+    joining_config.raftor.join = true;
+    try host_one.addGroup(first_config, machine_one.stateMachine());
+    try host_two.addGroup(second_config, machine_two.stateMachine());
+    try host_three.addGroup(joining_config, machine_three.stateMachine());
+    try host_one.campaign(96);
+    try drive(&.{ host_one, host_two, host_three }, 20);
+
+    var migration = ReplicaMigrationCapture{};
+    try host_one.requestReplicaMigration(.{
+        .group_id = 96,
+        .source_node_id = 2,
+        .target_node_id = 3,
+        .target_address = "node-3",
+        .timeout_ticks = 8,
+        .stable_catch_up_ticks = 1,
+    }, migration.callback());
+    try drive(&.{ host_one, host_two, host_three }, 12);
+
+    try std.testing.expect(migration.completed);
+    try std.testing.expectEqual(error.Timeout, migration.result.err.?);
+    const probe = try host_one.getRaftor(96).?.probeReplicaMigration(2, 3, "node-3");
+    try std.testing.expectEqual(raft.MembershipRole.voter, probe.source_role.?);
+    try std.testing.expectEqual(raft.MembershipRole.learner, probe.target_role.?);
+    const status = host_one.getHostStatus();
+    try std.testing.expectEqual(@as(u64, 1), status.replica_migrations_failed);
+    try std.testing.expectEqual(@as(u64, 1), status.replica_migrations_timed_out);
+}
+
+test "multi raft: migration cancellation does not roll back learner addition" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport_one = try network.createTransport(1);
+    _ = try network.createTransport(2);
+    const host = try raft.MultiRaftHost.create(allocator, .{ .node_id = 1 }, transport_one.transport());
+    defer host.destroy();
+    var machine = raft.MockStateMachine.init(allocator);
+    defer machine.deinit();
+    const initial_peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
+    var group_config = groupConfig(97, 1, &initial_peers);
+    group_config.raftor.cluster_id = [_]u8{0x97} ** 16;
+    try host.addGroup(group_config, machine.stateMachine());
+    try host.campaign(97);
+    var migration = ReplicaMigrationCapture{};
+    try host.requestReplicaMigration(.{
+        .group_id = 97,
+        .source_node_id = 1,
+        .target_node_id = 2,
+        .target_address = "node-2",
+        .timeout_ticks = 100,
+        .stable_catch_up_ticks = 1,
+    }, migration.callback());
+    try drive(&.{host}, 5);
+    try std.testing.expect(host.getReplicaMigrationStatus(97) != null);
+    try host.cancelReplicaMigration(97);
+    _ = try host.poll();
+
+    try std.testing.expect(migration.completed);
+    try std.testing.expectEqual(error.ReplicaMigrationCancelled, migration.result.err.?);
+    const probe = try host.getRaftor(97).?.probeReplicaMigration(1, 2, "node-2");
+    try std.testing.expectEqual(raft.MembershipRole.voter, probe.source_role.?);
+    try std.testing.expectEqual(raft.MembershipRole.learner, probe.target_role.?);
+    try std.testing.expectEqual(@as(u64, 1), host.getHostStatus().replica_migrations_cancelled);
+}
+
+test "multi raft: migration capacity and shutdown drain callbacks" {
+    const network = try raft.LoopbackMultiNetwork.create(allocator);
+    defer network.destroy();
+    const transport = try network.createTransport(1);
+    const host = try raft.MultiRaftHost.create(allocator, .{
+        .node_id = 1,
+        .max_active_migrations = 1,
+    }, transport.transport());
+    defer host.destroy();
+    var first_machine = raft.MockStateMachine.init(allocator);
+    defer first_machine.deinit();
+    var second_machine = raft.MockStateMachine.init(allocator);
+    defer second_machine.deinit();
+    try host.addGroup(groupConfig(98, 1, &.{}), first_machine.stateMachine());
+    try host.addGroup(groupConfig(99, 1, &.{}), second_machine.stateMachine());
+    var first = ReplicaMigrationCapture{};
+    var duplicate = ReplicaMigrationCapture{};
+    var overflow = ReplicaMigrationCapture{};
+    const first_request = raft.ReplicaMigrationRequest{
+        .group_id = 98,
+        .source_node_id = 1,
+        .target_node_id = 2,
+        .target_address = "node-2",
+    };
+    try host.requestReplicaMigration(first_request, first.callback());
+    try std.testing.expectError(
+        error.DuplicateRequest,
+        host.requestReplicaMigration(first_request, duplicate.callback()),
+    );
+    try std.testing.expectError(
+        error.GroupOperationBackpressure,
+        host.requestReplicaMigration(.{
+            .group_id = 99,
+            .source_node_id = 1,
+            .target_node_id = 2,
+            .target_address = "node-2",
+        }, overflow.callback()),
+    );
+
+    host.stop();
+    try std.testing.expect(first.completed);
+    try std.testing.expectEqual(error.ShuttingDown, first.result.err.?);
+    try std.testing.expectEqual(@as(usize, 0), host.getHostStatus().active_replica_migrations);
+}
+
 test "multi raft: terminal group failure does not stop healthy groups" {
     const network = try raft.LoopbackMultiNetwork.create(allocator);
     defer network.destroy();
@@ -550,6 +854,60 @@ test "multi raft: concurrent stop joins the shared run loop" {
     var run_state = RunState{ .host = host };
     const thread = try std.Thread.spawn(.{}, RunState.run, .{&run_state});
     while (!host.isRunning()) std.atomic.spinLoopHint();
+    host.stop();
+    thread.join();
+    try std.testing.expect(run_state.err == null);
+}
+
+test "multi raft: migration status and cancellation are thread safe" {
+    const thread_allocator = std.heap.smp_allocator;
+    const network = try raft.LoopbackMultiNetwork.create(thread_allocator);
+    defer network.destroy();
+    const transport_one = try network.createTransport(1);
+    _ = try network.createTransport(2);
+    const host = try raft.MultiRaftHost.create(thread_allocator, .{
+        .node_id = 1,
+        .tick_interval_ms = 1,
+    }, transport_one.transport());
+    defer host.destroy();
+    var machine = raft.MockStateMachine.init(thread_allocator);
+    defer machine.deinit();
+    const initial_peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
+    var config = groupConfig(100, 1, &initial_peers);
+    config.raftor.cluster_id = [_]u8{0x10} ** 16;
+    try host.addGroup(config, machine.stateMachine());
+    try host.campaign(100);
+
+    const RunState = struct {
+        host: *raft.MultiRaftHost,
+        err: ?raft.Error = null,
+
+        fn run(self: *@This()) void {
+            self.host.run() catch |err| {
+                self.err = err;
+            };
+        }
+    };
+    var run_state = RunState{ .host = host };
+    const thread = try std.Thread.spawn(.{}, RunState.run, .{&run_state});
+    while (!host.isRunning()) std.atomic.spinLoopHint();
+    var migration = ConcurrentMigrationCapture{};
+    try host.requestReplicaMigration(.{
+        .group_id = 100,
+        .source_node_id = 1,
+        .target_node_id = 2,
+        .target_address = "node-2",
+        .timeout_ticks = 1000,
+    }, migration.callback());
+    try std.testing.expect(host.getReplicaMigrationStatus(100) != null);
+    try host.cancelReplicaMigration(100);
+    for (0..1000) |_| {
+        if (migration.completed.load(.acquire)) break;
+        _ = host.getReplicaMigrationStatus(100);
+        try std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .awake);
+    }
+    try std.testing.expect(migration.completed.load(.acquire));
+    try std.testing.expectEqual(error.ReplicaMigrationCancelled, migration.result.err.?);
     host.stop();
     thread.join();
     try std.testing.expect(run_state.err == null);

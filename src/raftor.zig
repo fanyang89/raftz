@@ -53,6 +53,7 @@ const RaftorConfig = raftor_config_mod.RaftorConfig;
 const LegacySnapshotMembership = raftor_config_mod.LegacySnapshotMembership;
 const StateRole = state_role_mod.StateRole;
 const ClusterMembership = cluster_membership_mod.ClusterMembership;
+const TrackerConfiguration = @import("tracker_conf.zig").TrackerConfiguration;
 const ClusterId = cluster_membership_mod.ClusterId;
 const PeerEndpoint = cluster_membership_mod.PeerEndpoint;
 const Peer = raw_node_mod.Peer;
@@ -85,6 +86,12 @@ fn sleepNanosecondsUsing(nanoseconds: u64, comptime nanosleep: anytype) void {
 
 fn currentThreadId() usize {
     return @intCast(std.Thread.getCurrentId());
+}
+
+fn membershipRole(conf: TrackerConfiguration, node_id: u64) ?MembershipRole {
+    if (conf.voters.contains(node_id)) return .voter;
+    if (conf.learners.contains(node_id) or conf.learners_next.contains(node_id)) return .learner;
+    return null;
 }
 
 const Lifecycle = enum {
@@ -167,6 +174,24 @@ pub const NodeStatus = struct {
     queued_read_indexes: usize = 0,
     queued_read_index_bytes: usize = 0,
     incarnation: u64 = 0,
+};
+
+pub const MembershipRole = enum {
+    voter,
+    learner,
+};
+
+pub const ReplicaMigrationProbe = struct {
+    local_role: StateRole,
+    leader_id: u64,
+    commit_index: u64,
+    pending_conf_change: bool,
+    joint_configuration: bool,
+    source_role: ?MembershipRole,
+    target_role: ?MembershipRole,
+    target_address_matches: bool,
+    target_matched: u64,
+    target_recent_active: bool,
 };
 
 pub const LeaderServicePolicy = struct {
@@ -1126,6 +1151,37 @@ pub const Raftor = struct {
 
     pub fn getClusterMembership(self: *const Raftor) ?*const ClusterMembership {
         return self.ready_processor.getClusterMembership();
+    }
+
+    pub fn probeReplicaMigration(
+        self: *Raftor,
+        source_node_id: u64,
+        target_node_id: u64,
+        target_address: []const u8,
+    ) Error!ReplicaMigrationProbe {
+        try self.enterEventLoop();
+        defer self.leaveEventLoop();
+        if (self.driverError()) |err| return err;
+        const raft = self.raw_node.raftConst();
+        const conf = raft.progress_tracker.conf;
+        const target_progress = raft.progress_tracker.progress.get(target_node_id);
+        const membership = self.ready_processor.getClusterMembership();
+        const target_address_matches = if (membership) |current|
+            if (current.addressOf(target_node_id)) |address| std.mem.eql(u8, address, target_address) else false
+        else
+            false;
+        return .{
+            .local_role = raft.state,
+            .leader_id = raft.leader_id,
+            .commit_index = raft.raft_log.committed,
+            .pending_conf_change = raft.hasPendingConf(),
+            .joint_configuration = conf.voters.outgoing.voters.count() != 0,
+            .source_role = membershipRole(conf, source_node_id),
+            .target_role = membershipRole(conf, target_node_id),
+            .target_address_matches = target_address_matches,
+            .target_matched = if (target_progress) |progress| progress.matched else 0,
+            .target_recent_active = if (target_progress) |progress| progress.recent_active else false,
+        };
     }
 
     pub fn getMembershipIndex(self: *const Raftor) u64 {

@@ -237,6 +237,8 @@ pub const StartupMode = raftor_mod.StartupMode;
 pub const RaftorDependencies = raftor_mod.RaftorDependencies;
 pub const ReadyPhase = ready_processor_mod.ReadyPhase;
 pub const NodeStatus = raftor_mod.NodeStatus;
+pub const MembershipRole = raftor_mod.MembershipRole;
+pub const ReplicaMigrationProbe = raftor_mod.ReplicaMigrationProbe;
 pub const LeaderServicePolicy = raftor_mod.LeaderServicePolicy;
 pub const Raftor = raftor_mod.Raftor;
 
@@ -285,6 +287,11 @@ pub const GroupOperationKind = multi_raft_mod.GroupOperationKind;
 pub const GroupOperationResult = multi_raft_mod.GroupOperationResult;
 pub const GroupOperationCallback = multi_raft_mod.GroupOperationCallback;
 pub const GroupOperationQueueStats = multi_raft_mod.GroupOperationQueueStats;
+pub const ReplicaMigrationRequest = multi_raft_mod.ReplicaMigrationRequest;
+pub const ReplicaMigrationStage = multi_raft_mod.ReplicaMigrationStage;
+pub const ReplicaMigrationStatus = multi_raft_mod.ReplicaMigrationStatus;
+pub const ReplicaMigrationResult = multi_raft_mod.ReplicaMigrationResult;
+pub const ReplicaMigrationCallback = multi_raft_mod.ReplicaMigrationCallback;
 pub const MultiRaftHost = multi_raft_mod.MultiRaftHost;
 pub const MultiRaft = multi_raft_mod.MultiRaftHost;
 

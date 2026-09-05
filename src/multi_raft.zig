@@ -68,6 +68,9 @@ pub const MultiRaftConfig = struct {
     priority_poll_budget: usize = 64,
     group_operation_budget: usize = 64,
     snapshot_budget: usize = 1,
+    migration_step_budget: usize = 16,
+    max_active_migrations: usize = 64,
+    max_replica_migration_address_bytes: usize = 4096,
     max_groups: usize = 1024,
     max_group_inbox_messages: usize = 4096,
     max_queued_group_operations: usize = 256,
@@ -78,6 +81,8 @@ pub const MultiRaftConfig = struct {
         if (self.node_id == 0) return error.InvalidNodeId;
         if (self.tick_interval_ms == 0 or self.transport_poll_budget == 0) return error.InvalidConfig;
         if (self.group_drive_budget == 0 or self.group_operation_budget == 0) return error.InvalidConfig;
+        if (self.migration_step_budget == 0 or self.max_active_migrations == 0) return error.InvalidConfig;
+        if (self.max_replica_migration_address_bytes == 0) return error.InvalidConfig;
         if (self.priority_poll_budget > 0 and self.max_queued_group_wakes == 0) return error.InvalidConfig;
         if (self.max_groups == 0 or self.max_group_inbox_messages == 0) return error.InvalidConfig;
         if (self.max_queued_group_operations == 0 or self.max_queued_group_operation_bytes == 0) return error.InvalidConfig;
@@ -135,6 +140,58 @@ pub const MultiRaftHostStatus = struct {
     snapshot_attempts: u64,
     snapshot_successes: u64,
     snapshot_failures: u64,
+    active_replica_migrations: usize,
+    replica_migrations_started: u64,
+    replica_migrations_completed: u64,
+    replica_migrations_failed: u64,
+    replica_migrations_timed_out: u64,
+    replica_migrations_cancelled: u64,
+};
+
+pub const ReplicaMigrationRequest = struct {
+    group_id: GroupId,
+    source_node_id: u64,
+    target_node_id: u64,
+    target_address: []const u8,
+    timeout_ticks: u64 = 600,
+    stable_catch_up_ticks: u32 = 2,
+};
+
+pub const ReplicaMigrationStage = enum(u8) {
+    adding_learner,
+    waiting_learner,
+    catching_up,
+    waiting_voter,
+    stabilizing_voter,
+    waiting_source_removal,
+};
+
+pub const ReplicaMigrationStatus = struct {
+    group_id: GroupId,
+    source_node_id: u64,
+    target_node_id: u64,
+    stage: ReplicaMigrationStage,
+    elapsed_ticks: u64,
+    stable_catch_up_ticks: u32,
+    target_matched: u64,
+    leader_commit: u64,
+    target_recent_active: bool,
+};
+
+pub const ReplicaMigrationResult = struct {
+    group_id: GroupId,
+    source_node_id: u64,
+    target_node_id: u64,
+    err: ?Error = null,
+};
+
+pub const ReplicaMigrationCallback = struct {
+    ctx: *anyopaque,
+    function: *const fn (ctx: *anyopaque, result: ReplicaMigrationResult) void,
+
+    pub fn invoke(self: ReplicaMigrationCallback, result: ReplicaMigrationResult) void {
+        self.function(self.ctx, result);
+    }
 };
 
 pub const GroupOperationKind = enum {
@@ -330,6 +387,82 @@ const GroupWakeQueue = struct {
         while (self.items.popFront() != null) {}
     }
 };
+
+const ReplicaMigration = struct {
+    group_id: GroupId,
+    source_node_id: u64,
+    target_node_id: u64,
+    target_address: []u8,
+    timeout_ticks: u64,
+    required_stable_ticks: u32,
+    start_tick: u64,
+    callback: ReplicaMigrationCallback,
+    stage: std.atomic.Value(ReplicaMigrationStage) = std.atomic.Value(ReplicaMigrationStage).init(.adding_learner),
+    stable_ticks: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    target_matched: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    leader_commit: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    target_recent_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    cancel_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    allocator: std.mem.Allocator,
+
+    fn create(
+        allocator: std.mem.Allocator,
+        request: ReplicaMigrationRequest,
+        start_tick: u64,
+        callback: ReplicaMigrationCallback,
+    ) Error!*ReplicaMigration {
+        const self = try allocator.create(ReplicaMigration);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .group_id = request.group_id,
+            .source_node_id = request.source_node_id,
+            .target_node_id = request.target_node_id,
+            .target_address = try allocator.dupe(u8, request.target_address),
+            .timeout_ticks = request.timeout_ticks,
+            .required_stable_ticks = request.stable_catch_up_ticks,
+            .start_tick = start_tick,
+            .callback = callback,
+            .allocator = allocator,
+        };
+        return self;
+    }
+
+    fn destroy(self: *ReplicaMigration) void {
+        self.allocator.free(self.target_address);
+        self.allocator.destroy(self);
+    }
+
+    fn status(self: *const ReplicaMigration, now: u64) ReplicaMigrationStatus {
+        return .{
+            .group_id = self.group_id,
+            .source_node_id = self.source_node_id,
+            .target_node_id = self.target_node_id,
+            .stage = self.stage.load(.acquire),
+            .elapsed_ticks = now -| self.start_tick,
+            .stable_catch_up_ticks = self.stable_ticks.load(.acquire),
+            .target_matched = self.target_matched.load(.acquire),
+            .leader_commit = self.leader_commit.load(.acquire),
+            .target_recent_active = self.target_recent_active.load(.acquire),
+        };
+    }
+};
+
+fn migrationCaughtUp(
+    migration: *ReplicaMigration,
+    probe: raftor_mod.ReplicaMigrationProbe,
+    advance_clock: bool,
+) bool {
+    if (!probe.target_recent_active or probe.target_matched < probe.commit_index) {
+        migration.stable_ticks.store(0, .release);
+        return false;
+    }
+    var stable = migration.stable_ticks.load(.acquire);
+    if (advance_clock and stable < std.math.maxInt(u32)) {
+        stable += 1;
+        migration.stable_ticks.store(stable, .release);
+    }
+    return stable >= migration.required_stable_ticks;
+}
 
 const GroupTransport = struct {
     group_id: GroupId,
@@ -686,6 +819,9 @@ pub const MultiRaftHost = struct {
     group_ids: std.ArrayList(GroupId) = .empty,
     group_operations: GroupOperationQueue,
     group_wakes: GroupWakeQueue,
+    replica_migrations: std.AutoHashMap(GroupId, *ReplicaMigration),
+    replica_migration_ids: std.ArrayList(GroupId) = .empty,
+    replica_migrations_mutex: std.atomic.Mutex = .unlocked,
     next_group_generation: u64 = 0,
     lifecycle_mutex: std.atomic.Mutex = .unlocked,
     event_loop_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -696,6 +832,7 @@ pub const MultiRaftHost = struct {
     stopped: bool = false,
     round_robin_cursor: usize = 0,
     snapshot_cursor: usize = 0,
+    migration_cursor: usize = 0,
     unknown_group_messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     host_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     tick_iterations: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -712,6 +849,11 @@ pub const MultiRaftHost = struct {
     snapshot_attempts: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     snapshot_successes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     snapshot_failures: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    replica_migrations_started: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    replica_migrations_completed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    replica_migrations_failed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    replica_migrations_timed_out: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    replica_migrations_cancelled: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -730,6 +872,7 @@ pub const MultiRaftHost = struct {
             .config = config,
             .transport = transport,
             .groups = std.AutoHashMap(GroupId, *Group).init(allocator),
+            .replica_migrations = std.AutoHashMap(GroupId, *ReplicaMigration).init(allocator),
             .group_operations = GroupOperationQueue.init(
                 allocator,
                 config.max_queued_group_operations,
@@ -738,6 +881,7 @@ pub const MultiRaftHost = struct {
             .group_wakes = try GroupWakeQueue.init(allocator, config.max_queued_group_wakes),
         };
         errdefer self.groups.deinit();
+        errdefer self.replica_migrations.deinit();
         errdefer self.group_operations.deinit();
         errdefer self.group_wakes.deinit();
 
@@ -768,6 +912,9 @@ pub const MultiRaftHost = struct {
         while (iterator.next()) |group| group.*.destroy();
         self.groups.deinit();
         self.group_ids.deinit(self.allocator);
+        std.debug.assert(self.replica_migrations.count() == 0);
+        self.replica_migrations.deinit();
+        self.replica_migration_ids.deinit(self.allocator);
         self.group_operations.deinit();
         self.group_wakes.deinit();
         self.transport.setEnvelopeCallback(null);
@@ -841,6 +988,78 @@ pub const MultiRaftHost = struct {
         } }, 0);
     }
 
+    /// Start an online replica replacement on the current group leader.
+    /// The target group must already be running in join mode on its node.
+    pub fn requestReplicaMigration(
+        self: *MultiRaftHost,
+        request: ReplicaMigrationRequest,
+        callback: ReplicaMigrationCallback,
+    ) Error!void {
+        if (request.group_id == 0) return error.InvalidGroupId;
+        if (request.source_node_id == 0 or request.target_node_id == 0) return error.InvalidNodeId;
+        if (request.source_node_id == request.target_node_id) return error.ReplicaMigrationConflict;
+        if (request.target_address.len == 0) return error.PeerAddressMissing;
+        if (request.target_address.len > self.config.max_replica_migration_address_bytes) {
+            return error.GroupOperationBackpressure;
+        }
+        if (request.timeout_ticks == 0 or request.stable_catch_up_ticks == 0) return error.InvalidConfig;
+
+        spinLock(&self.lifecycle_mutex);
+        defer self.lifecycle_mutex.unlock();
+        if (self.stopped) return error.ShuttingDown;
+        spinLock(&self.groups_mutex);
+        const group = self.groups.get(request.group_id) orelse {
+            self.groups_mutex.unlock();
+            return error.GroupNotFound;
+        };
+        const group_status = group.lifecycleSnapshot();
+        self.groups_mutex.unlock();
+        if (group_status.lifecycle == .terminal) return group_status.last_error.?;
+        if (group_status.lifecycle == .stopping) return error.ShuttingDown;
+
+        const migration = try ReplicaMigration.create(
+            self.allocator,
+            request,
+            self.tick_iterations.load(.acquire),
+            callback,
+        );
+        errdefer migration.destroy();
+        spinLock(&self.replica_migrations_mutex);
+        defer self.replica_migrations_mutex.unlock();
+        if (self.replica_migrations.contains(request.group_id)) return error.DuplicateRequest;
+        if (self.replica_migrations.count() >= self.config.max_active_migrations) {
+            return error.GroupOperationBackpressure;
+        }
+        try self.replica_migrations.ensureUnusedCapacity(1);
+        try self.replica_migration_ids.ensureUnusedCapacity(self.allocator, 1);
+        self.replica_migrations.putAssumeCapacity(request.group_id, migration);
+        self.replica_migration_ids.appendAssumeCapacity(request.group_id);
+        _ = self.replica_migrations_started.fetchAdd(1, .monotonic);
+    }
+
+    /// Request cancellation without rolling back committed membership changes.
+    pub fn cancelReplicaMigration(self: *MultiRaftHost, group_id: GroupId) Error!void {
+        if (group_id == 0) return error.InvalidGroupId;
+        spinLock(&self.lifecycle_mutex);
+        defer self.lifecycle_mutex.unlock();
+        if (self.stopped) return error.ShuttingDown;
+        spinLock(&self.replica_migrations_mutex);
+        defer self.replica_migrations_mutex.unlock();
+        const migration = self.replica_migrations.get(group_id) orelse return error.GroupNotFound;
+        migration.cancel_requested.store(true, .release);
+    }
+
+    pub fn getReplicaMigrationStatus(
+        self: *const MultiRaftHost,
+        group_id: GroupId,
+    ) ?ReplicaMigrationStatus {
+        const mutex = @constCast(&self.replica_migrations_mutex);
+        spinLock(mutex);
+        defer mutex.unlock();
+        const migration = self.replica_migrations.get(group_id) orelse return null;
+        return migration.status(self.tick_iterations.load(.acquire));
+    }
+
     /// Replace a group using a new configuration and StateMachine.
     /// If recreation fails, the old group remains removed and can be added again.
     pub fn requestRestartGroup(
@@ -912,6 +1131,7 @@ pub const MultiRaftHost = struct {
         }
         defer self.shutdown_callback_thread_id.store(0, .release);
         self.failQueuedGroupOperations(error.ShuttingDown);
+        self.failReplicaMigrations(error.ShuttingDown);
         self.group_wakes.clear();
         var iterator = self.groups.valueIterator();
         while (iterator.next()) |group| {
@@ -1022,6 +1242,12 @@ pub const MultiRaftHost = struct {
             .snapshot_attempts = self.snapshot_attempts.load(.acquire),
             .snapshot_successes = self.snapshot_successes.load(.acquire),
             .snapshot_failures = self.snapshot_failures.load(.acquire),
+            .active_replica_migrations = self.activeReplicaMigrationCount(),
+            .replica_migrations_started = self.replica_migrations_started.load(.acquire),
+            .replica_migrations_completed = self.replica_migrations_completed.load(.acquire),
+            .replica_migrations_failed = self.replica_migrations_failed.load(.acquire),
+            .replica_migrations_timed_out = self.replica_migrations_timed_out.load(.acquire),
+            .replica_migrations_cancelled = self.replica_migrations_cancelled.load(.acquire),
         };
         const mutex = @constCast(&self.groups_mutex);
         spinLock(mutex);
@@ -1104,6 +1330,7 @@ pub const MultiRaftHost = struct {
             self.round_robin_cursor = (self.round_robin_cursor + drive_count) % self.group_ids.items.len;
         }
         if (advance_clock and self.driveAutomaticSnapshots()) had_work = true;
+        if (self.driveReplicaMigrations(advance_clock)) had_work = true;
         if (first_error) |err| return err;
         return had_work;
     }
@@ -1173,6 +1400,276 @@ pub const MultiRaftHost = struct {
         }
         self.snapshot_cursor = (self.snapshot_cursor + inspected) % group_count;
         return had_work;
+    }
+
+    const MigrationStepResult = union(enum) {
+        idle,
+        worked,
+        completed: ?Error,
+    };
+
+    fn driveReplicaMigrations(self: *MultiRaftHost, advance_clock: bool) bool {
+        spinLock(&self.replica_migrations_mutex);
+        const count = self.replica_migration_ids.items.len;
+        self.replica_migrations_mutex.unlock();
+        if (count == 0) return false;
+        const drive_count = @min(self.config.migration_step_budget, count);
+        var had_work = false;
+        for (0..drive_count) |offset| {
+            spinLock(&self.replica_migrations_mutex);
+            if (self.replica_migration_ids.items.len == 0) {
+                self.replica_migrations_mutex.unlock();
+                break;
+            }
+            const index = (self.migration_cursor + offset) % self.replica_migration_ids.items.len;
+            const group_id = self.replica_migration_ids.items[index];
+            const migration = self.replica_migrations.get(group_id).?;
+            self.replica_migrations_mutex.unlock();
+            switch (self.stepReplicaMigration(migration, advance_clock)) {
+                .idle => {},
+                .worked => had_work = true,
+                .completed => |migration_error| {
+                    had_work = true;
+                    self.finishReplicaMigration(migration, migration_error);
+                },
+            }
+        }
+        spinLock(&self.replica_migrations_mutex);
+        if (self.replica_migration_ids.items.len == 0) {
+            self.migration_cursor = 0;
+        } else {
+            self.migration_cursor = (self.migration_cursor + drive_count) % self.replica_migration_ids.items.len;
+        }
+        self.replica_migrations_mutex.unlock();
+        return had_work;
+    }
+
+    fn stepReplicaMigration(
+        self: *MultiRaftHost,
+        migration: *ReplicaMigration,
+        advance_clock: bool,
+    ) MigrationStepResult {
+        if (migration.cancel_requested.load(.acquire)) {
+            return .{ .completed = error.ReplicaMigrationCancelled };
+        }
+        const now = self.tick_iterations.load(.acquire);
+        if (advance_clock and now -| migration.start_tick >= migration.timeout_ticks) {
+            return .{ .completed = error.Timeout };
+        }
+
+        spinLock(&self.groups_mutex);
+        const group = self.groups.get(migration.group_id);
+        self.groups_mutex.unlock();
+        const selected = group orelse return .{ .completed = error.GroupNotFound };
+        const lifecycle = selected.lifecycleSnapshot();
+        if (lifecycle.lifecycle == .terminal) return .{ .completed = lifecycle.last_error.? };
+        if (lifecycle.lifecycle == .stopping) return .{ .completed = error.ShuttingDown };
+
+        const probe = selected.raftor.probeReplicaMigration(
+            migration.source_node_id,
+            migration.target_node_id,
+            migration.target_address,
+        ) catch |err| return .{ .completed = err };
+        migration.target_matched.store(probe.target_matched, .release);
+        migration.leader_commit.store(probe.commit_index, .release);
+        migration.target_recent_active.store(probe.target_recent_active, .release);
+
+        if (probe.target_role != null and !probe.target_address_matches) {
+            return .{ .completed = error.ReplicaMigrationConflict };
+        }
+        if (probe.source_role == null) {
+            if (probe.target_role == .voter and probe.target_address_matches) {
+                return .{ .completed = null };
+            }
+            return .{ .completed = error.ReplicaMigrationConflict };
+        }
+        if (probe.source_role != .voter) return .{ .completed = error.ReplicaMigrationConflict };
+        if (probe.local_role != .leader) {
+            migration.stable_ticks.store(0, .release);
+            return .idle;
+        }
+        if (probe.joint_configuration) return .idle;
+
+        return switch (migration.stage.load(.acquire)) {
+            .adding_learner => self.addMigrationLearner(selected, migration, probe),
+            .waiting_learner => switch (probe.target_role orelse {
+                if (!probe.pending_conf_change) migration.stage.store(.adding_learner, .release);
+                return .idle;
+            }) {
+                .learner => self.advanceMigrationStage(migration, .catching_up),
+                .voter => self.advanceMigrationStage(migration, .stabilizing_voter),
+            },
+            .catching_up => self.catchUpMigrationLearner(selected, migration, probe, advance_clock),
+            .waiting_voter => switch (probe.target_role orelse
+                return .{ .completed = error.ReplicaMigrationConflict }) {
+                .learner => if (probe.pending_conf_change)
+                    .idle
+                else
+                    self.advanceMigrationStage(migration, .catching_up),
+                .voter => self.advanceMigrationStage(migration, .stabilizing_voter),
+            },
+            .stabilizing_voter => self.stabilizeMigrationVoter(selected, migration, probe, advance_clock),
+            .waiting_source_removal => self.waitMigrationSourceRemoval(selected, migration, probe),
+        };
+    }
+
+    fn addMigrationLearner(
+        self: *MultiRaftHost,
+        group: *Group,
+        migration: *ReplicaMigration,
+        probe: raftor_mod.ReplicaMigrationProbe,
+    ) MigrationStepResult {
+        if (probe.target_role) |role| return self.advanceMigrationStage(
+            migration,
+            if (role == .learner) .catching_up else .stabilizing_voter,
+        );
+        if (probe.pending_conf_change) return .idle;
+        group.raftor.addLearner(migration.target_node_id, migration.target_address) catch |err| {
+            if (err == error.ProposalDropped) return .idle;
+            return .{ .completed = err };
+        };
+        migration.stage.store(.waiting_learner, .release);
+        migration.stable_ticks.store(0, .release);
+        return .worked;
+    }
+
+    fn catchUpMigrationLearner(
+        self: *MultiRaftHost,
+        group: *Group,
+        migration: *ReplicaMigration,
+        probe: raftor_mod.ReplicaMigrationProbe,
+        advance_clock: bool,
+    ) MigrationStepResult {
+        if (probe.target_role == .voter) return self.advanceMigrationStage(migration, .stabilizing_voter);
+        if (probe.target_role != .learner) return .{ .completed = error.ReplicaMigrationConflict };
+        if (probe.pending_conf_change) return .idle;
+        if (!migrationCaughtUp(migration, probe, advance_clock)) return .idle;
+        group.raftor.addNode(migration.target_node_id, migration.target_address) catch |err| {
+            if (err == error.ProposalDropped) return .idle;
+            return .{ .completed = err };
+        };
+        migration.stage.store(.waiting_voter, .release);
+        migration.stable_ticks.store(0, .release);
+        return .worked;
+    }
+
+    fn stabilizeMigrationVoter(
+        self: *MultiRaftHost,
+        group: *Group,
+        migration: *ReplicaMigration,
+        probe: raftor_mod.ReplicaMigrationProbe,
+        advance_clock: bool,
+    ) MigrationStepResult {
+        _ = self;
+        if (probe.target_role != .voter) return .{ .completed = error.ReplicaMigrationConflict };
+        if (probe.pending_conf_change) return .idle;
+        if (!migrationCaughtUp(migration, probe, advance_clock)) return .idle;
+        group.raftor.removeNode(migration.source_node_id) catch |err| {
+            if (err == error.ProposalDropped) return .idle;
+            return .{ .completed = err };
+        };
+        migration.stage.store(.waiting_source_removal, .release);
+        migration.stable_ticks.store(0, .release);
+        return .worked;
+    }
+
+    fn waitMigrationSourceRemoval(
+        self: *MultiRaftHost,
+        group: *Group,
+        migration: *ReplicaMigration,
+        probe: raftor_mod.ReplicaMigrationProbe,
+    ) MigrationStepResult {
+        _ = self;
+        if (probe.source_role == null) return .{ .completed = null };
+        if (probe.target_role != .voter) return .{ .completed = error.ReplicaMigrationConflict };
+        if (probe.pending_conf_change) return .idle;
+        group.raftor.removeNode(migration.source_node_id) catch |err| {
+            if (err == error.ProposalDropped) return .idle;
+            return .{ .completed = err };
+        };
+        return .worked;
+    }
+
+    fn advanceMigrationStage(
+        self: *MultiRaftHost,
+        migration: *ReplicaMigration,
+        stage: ReplicaMigrationStage,
+    ) MigrationStepResult {
+        _ = self;
+        migration.stage.store(stage, .release);
+        migration.stable_ticks.store(0, .release);
+        return .worked;
+    }
+
+    fn finishReplicaMigration(
+        self: *MultiRaftHost,
+        migration: *ReplicaMigration,
+        migration_error: ?Error,
+    ) void {
+        spinLock(&self.replica_migrations_mutex);
+        const removed = self.replica_migrations.remove(migration.group_id);
+        if (removed) self.removeReplicaMigrationId(migration.group_id);
+        self.replica_migrations_mutex.unlock();
+        if (!removed) return;
+
+        if (migration_error) |err| {
+            _ = self.replica_migrations_failed.fetchAdd(1, .monotonic);
+            if (err == error.Timeout) _ = self.replica_migrations_timed_out.fetchAdd(1, .monotonic);
+            if (err == error.ReplicaMigrationCancelled) {
+                _ = self.replica_migrations_cancelled.fetchAdd(1, .monotonic);
+            }
+        } else {
+            _ = self.replica_migrations_completed.fetchAdd(1, .monotonic);
+            if (migration.source_node_id == self.config.node_id) {
+                spinLock(&self.groups_mutex);
+                const group = self.groups.get(migration.group_id);
+                self.groups_mutex.unlock();
+                if (group) |selected| {
+                    selected.markStopping();
+                    selected.raftor.stop();
+                }
+            }
+        }
+        migration.callback.invoke(.{
+            .group_id = migration.group_id,
+            .source_node_id = migration.source_node_id,
+            .target_node_id = migration.target_node_id,
+            .err = migration_error,
+        });
+        migration.destroy();
+    }
+
+    fn removeReplicaMigrationId(self: *MultiRaftHost, group_id: GroupId) void {
+        for (self.replica_migration_ids.items, 0..) |id, index| {
+            if (id != group_id) continue;
+            _ = self.replica_migration_ids.orderedRemove(index);
+            if (self.replica_migration_ids.items.len == 0) {
+                self.migration_cursor = 0;
+            } else if (self.migration_cursor >= self.replica_migration_ids.items.len) {
+                self.migration_cursor %= self.replica_migration_ids.items.len;
+            }
+            return;
+        }
+    }
+
+    fn activeReplicaMigrationCount(self: *const MultiRaftHost) usize {
+        const mutex = @constCast(&self.replica_migrations_mutex);
+        spinLock(mutex);
+        defer mutex.unlock();
+        return self.replica_migrations.count();
+    }
+
+    fn failReplicaMigrations(self: *MultiRaftHost, migration_error: Error) void {
+        while (true) {
+            spinLock(&self.replica_migrations_mutex);
+            const migration = if (self.replica_migration_ids.items.len == 0)
+                null
+            else
+                self.replica_migrations.get(self.replica_migration_ids.items[0]);
+            self.replica_migrations_mutex.unlock();
+            const selected = migration orelse return;
+            self.finishReplicaMigration(selected, migration_error);
+        }
     }
 
     fn processGroupOperations(self: *MultiRaftHost) bool {

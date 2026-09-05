@@ -140,6 +140,42 @@ thread. The budget bounds how many snapshots start in one iteration; application
 must still keep StateMachine snapshot work bounded or provide suitably sparse
 thresholds.
 
+## Online Replica Migration
+
+`requestReplicaMigration` runs a bounded, in-memory replacement workflow on the
+current group leader:
+
+1. add the target as a learner;
+2. wait until it is active and fully matched to the leader commit index for the
+   configured number of stable ticks;
+3. promote it to a voter;
+4. re-check voter catch-up stability;
+5. remove the source voter.
+
+The target application must create the same Group in join mode first, with the
+same cluster ID, seed peers, and an appropriate StateMachine. The Host does not
+provide a remote control plane for constructing the target Group.
+
+`getReplicaMigrationStatus` reports the current stage, elapsed logical ticks,
+replication indexes, and target activity. `cancelReplicaMigration` stops the
+workflow without undoing membership changes that already committed. Leader loss
+pauses new actions while the total timeout continues. Timeout, cancellation,
+shutdown, or a conflicting external configuration change leave the last safe
+membership in place; the coordinator never automatically removes an added
+learner or voter.
+
+Migration intent and callbacks are not persisted. After a coordinator restart,
+the application may submit the same intent again; the workflow infers whether
+the target is absent, already a learner, or already a voter. Removing the
+current leader is supported but causes a normal election window. A successful
+local-source migration stops the removed local Group while preserving its WAL.
+When the coordinator replaces a replica on another Host, that Host's application
+remains responsible for stopping the now-retired local Group.
+
+`migration_step_budget` and `max_active_migrations` bound coordinator work and
+memory. Host metrics expose active, started, completed, failed, timed-out, and
+cancelled migrations.
+
 ## Shared Transport
 
 `MultiTransport` is parallel to the existing single-group `Transport`. Its
