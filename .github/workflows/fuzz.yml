@@ -13,8 +13,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependency-cache:
+    name: Prepare Zig dependency cache
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install mise tools
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+
+      - name: Restore Zig package cache
+        id: zig-cache
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.cache/zig/p
+          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'build.zig.zon', 'scripts/prepare-ci-zig-cache.sh') }}
+
+      - name: Fetch Zig dependencies
+        if: steps.zig-cache.outputs.cache-hit != 'true'
+        run: scripts/prepare-ci-zig-cache.sh
+
   fuzz:
     name: Fuzz (${{ matrix.target }})
+    needs: dependency-cache
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +64,13 @@ jobs:
 
       - name: Install mise tools
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+
+      - name: Restore Zig package cache
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.cache/zig/p
+          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'build.zig.zon', 'scripts/prepare-ci-zig-cache.sh') }}
+          fail-on-cache-miss: true
 
       - name: Run bounded fuzzing
         run: scripts/run-fuzz.sh fuzz-${{ matrix.target }} ${{ matrix.runs }}
