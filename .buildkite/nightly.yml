@@ -1,0 +1,28 @@
+agents:
+  queue: raftz-linux-amd64
+
+steps:
+  - label: "Nightly fuzz ({{matrix}})"
+    key: fuzz
+    command: bash .buildkite/scripts/run.sh x86_64 scripts/run-fuzz.sh fuzz-{{matrix}} 1M
+    matrix: [codec, wal, confchange]
+    timeout_in_minutes: 60
+    artifact_paths: &fuzz-artifacts
+      - crash-*
+      - leak-*
+      - oom-*
+      - timeout-*
+      - .zig-cache/f/**/*
+      - .zig-cache/tmp/libfuzzer.log
+
+  - label: "Nightly fuzz (sim)"
+    key: fuzz-sim
+    command: bash .buildkite/scripts/run.sh x86_64 scripts/run-fuzz.sh fuzz-sim 100K
+    timeout_in_minutes: 60
+    artifact_paths: *fuzz-artifacts
+
+  - label: "Nightly fuzz (wal-crash)"
+    key: fuzz-wal-crash
+    command: bash .buildkite/scripts/run.sh x86_64 scripts/run-fuzz.sh fuzz-wal-crash 10K
+    timeout_in_minutes: 60
+    artifact_paths: *fuzz-artifacts
