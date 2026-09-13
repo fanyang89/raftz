@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run all CI lint checks"
+set -euo pipefail
+
+mise run fmt-check
+mise run ci-lint
+mise run ci-lint-buildkite

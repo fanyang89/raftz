@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run WAL durability tests and WAL crash fuzz"
+set -euo pipefail
+
+mise run wal-durability
+mise run fuzz-wal-crash
