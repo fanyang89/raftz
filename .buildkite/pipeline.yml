@@ -1,5 +1,5 @@
 agents:
-  queue: raftz-linux-amd64
+  queue: linux-medium
 
 cache:
   paths:
@@ -16,19 +16,6 @@ steps:
   - label: "Core (x86_64, {{matrix}})"
     key: core-amd64
     command: bash .buildkite/scripts/run.sh x86_64 zig build test -Doptimize={{matrix}} --summary all
-    matrix: [Debug, ReleaseSafe]
-    timeout_in_minutes: 30
-
-  - label: "Core (aarch64, {{matrix}})"
-    key: core-arm64
-    agents:
-      queue: raftz-linux-arm64
-    cache:
-      paths:
-        - ".zig-cache"
-        - "/tmp/raftz-ci-cache"
-      name: "raftz-${BUILDKITE_COMMIT}-arm64-cache"
-    command: bash .buildkite/scripts/run.sh aarch64 zig build test -Doptimize={{matrix}} --summary all
     matrix: [Debug, ReleaseSafe]
     timeout_in_minutes: 30
 

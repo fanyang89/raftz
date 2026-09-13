@@ -40,18 +40,18 @@ class PipelineTests(unittest.TestCase):
     def test_regular_workloads(self):
         pipeline = load_pipeline("pipeline.yml")
         expanded = list(jobs(pipeline))
-        self.assertEqual(len(expanded), 16)
+        self.assertEqual(len(expanded), 14)
         core = [job for job in expanded if job["key"].startswith("core-")]
-        self.assertEqual(len(core), 4)
-        for arch, queue in [("x86_64", "amd64"), ("aarch64", "arm64")]:
-            for mode in ["Debug", "ReleaseSafe"]:
-                command = (
-                    f"bash .buildkite/scripts/run.sh {arch} zig build test "
-                    f"-Doptimize={mode} --summary all"
-                )
-                match = [job for job in core if job["command"] == command]
-                self.assertEqual(len(match), 1)
-                self.assertEqual(match[0]["agents"]["queue"], f"raftz-linux-{queue}")
+        self.assertEqual(len(core), 2)
+        self.assertEqual({job["key"] for job in core}, {"core-amd64"})
+        for mode in ["Debug", "ReleaseSafe"]:
+            command = (
+                "bash .buildkite/scripts/run.sh x86_64 zig build test "
+                f"-Doptimize={mode} --summary all"
+            )
+            match = [job for job in core if job["command"] == command]
+            self.assertEqual(len(match), 1)
+            self.assertEqual(match[0]["agents"]["queue"], "linux-medium")
         commands = "\n".join(job["command"] for job in expanded)
         self.assertIn("mise run ci-lint-all", commands)
         self.assertIn("mise run test-wal-crash", commands)
@@ -100,11 +100,6 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("/tmp/raftz-ci-cache", cache["paths"])
             self.assertIn("${BUILDKITE_COMMIT}", cache["name"])
             self.assertNotIn("${BUILDKITE_BRANCH}", cache["name"])
-        pipeline = load_pipeline("pipeline.yml")
-        arm = [s for s in pipeline["steps"] if s["key"] == "core-arm64"]
-        self.assertEqual(len(arm), 1)
-        self.assertEqual(arm[0]["cache"]["paths"], pipeline["cache"]["paths"])
-        self.assertIn("arm64", arm[0]["cache"]["name"])
 
     def test_cache_names_are_valid_after_interpolation(self):
         commit = "a" * 40
@@ -121,7 +116,7 @@ class PipelineTests(unittest.TestCase):
                         self.assertRegex(cache["name"], r"^[A-Za-z0-9-]+$")
                         self.assertIn(commit, cache["name"])
 
-    def test_cache_names_separate_commits_architectures_and_nightly(self):
+    def test_cache_names_separate_commits_and_nightly(self):
         names_by_commit = []
         for commit in ["a" * 40, "b" * 40]:
             environment = {"BUILDKITE_BRANCH": "formal/etcd-tla-baseline",
@@ -130,8 +125,8 @@ class PipelineTests(unittest.TestCase):
             nightly = load_pipeline("nightly.yml", environment)
             names = [regular["cache"]["name"], nightly["cache"]["name"]]
             names.extend(step["cache"]["name"] for step in regular["steps"] if "cache" in step)
-            self.assertEqual(len(names), 3)
-            self.assertEqual(len(set(names)), 3)
+            self.assertEqual(len(names), 2)
+            self.assertEqual(len(set(names)), 2)
             names_by_commit.append(set(names))
         self.assertTrue(names_by_commit[0].isdisjoint(names_by_commit[1]))
 
@@ -152,9 +147,8 @@ class PipelineTests(unittest.TestCase):
                     self.assertIn("with-fuzz-artifacts.sh", job["command"])
                 if job["key"] == "coverage":
                     self.assertIn("zig-out/coverage/**/*", job["artifact_paths"])
-                if job["key"] != "core-arm64":
-                    self.assertEqual(job["agents"]["queue"], "raftz-linux-amd64")
-                    self.assertIn("run.sh x86_64 ", job["command"])
+                self.assertEqual(job["agents"]["queue"], "linux-medium")
+                self.assertIn("run.sh x86_64 ", job["command"])
 
 
 class BootstrapTests(unittest.TestCase):

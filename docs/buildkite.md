@@ -5,15 +5,19 @@ Buildkite runs alongside GitHub Actions during the migration. The workflows in
 Creating these files does not create queues, pipelines, schedules, or GitHub
 integration settings in Buildkite.
 
+Buildkite temporarily runs Linux AMD64 only on the existing `linux-medium`
+queue. Linux ARM64 Debug and ReleaseSafe coverage remains in GitHub Actions.
+The available macOS ARM64 queues are not substitutes for Linux ARM64 jobs.
+
 ## Pipelines
 
 | File | Workloads | Expanded jobs |
 | --- | --- | --- |
-| `.buildkite/pipeline.yml` | Lint, dual-architecture core tests, coverage, both examples, sanitizers, gperftools, bounded fuzzing, WAL durability | 16 |
+| `.buildkite/pipeline.yml` | Lint, AMD64 core tests, coverage, both examples, sanitizers, gperftools, bounded fuzzing, WAL durability | 14 |
 | `.buildkite/nightly.yml` | Codec/WAL/confchange at 1M runs, simulation at 100K, WAL crash at 10K | 5 |
 
-The regular pipeline preserves the existing test commands, optimization modes,
-fuzz budgets, and job timeouts. It uses the overall Buildkite pipeline status
+Apart from the deferred Linux ARM64 jobs, the regular pipeline preserves the
+existing test commands, optimization modes, fuzz budgets, and job timeouts. It uses the overall Buildkite pipeline status
 instead of a separate GitHub Actions `Required` aggregation job. No test is
 soft-failed, and a failing test does not cancel its siblings.
 `.buildkite/scripts/with-fuzz-artifacts.sh` uploads fuzz reproducers only when
@@ -24,16 +28,15 @@ on the hosted agents before cutover.
 
 ## Hosted queues
 
-Create two Linux hosted queues in the same Buildkite cluster:
+Both pipelines use this existing hosted queue in the pipeline's cluster:
 
-| Queue key | Architecture | Suggested starting shape |
+| Queue key | OS / architecture | Shape |
 | --- | --- | --- |
-| `raftz-linux-amd64` | AMD64 | `LINUX_AMD64_4X16` |
-| `raftz-linux-arm64` | ARM64 | `LINUX_ARM64_4X16` |
+| `linux-medium` | Linux AMD64 | 4 vCPU / 16 GB RAM |
 
-These names are referenced by the YAML files and initial upload steps below.
-If using different names, update both pipeline files and their configuration
-tests. Restrict pipeline access to these queues and set concurrency/budget limits
+This name is referenced by the YAML files and initial upload steps below.
+If using a different name, update both pipeline files and their configuration
+tests. Restrict pipeline access to this queue and set concurrency/budget limits
 before enabling all jobs. Each job should get an isolated hosted environment;
 do not share a writable checkout between concurrent jobs.
 
@@ -77,9 +80,10 @@ interpolated names as well as native YAML parsing.
 
 Jobs and retries for the same commit can reuse these volumes, including across
 branches at that commit. New commits start with a separate cache; this deliberately
-trades cross-commit reuse for simple, collision-free source-revision keys. The
-ARM64 core steps use an `-arm64-` volume because `MISE_DATA_DIR` contains
-architecture-specific binaries. Nightly uses a separate `-nightly-` volume.
+trades cross-commit reuse for simple, collision-free source-revision keys.
+Nightly uses a separate `-nightly-` volume. If Linux ARM64 jobs are restored,
+give them a separate cache because `MISE_DATA_DIR` contains architecture-specific
+binaries.
 Cache names are not an authorization boundary; fork builds remain approval-gated.
 Volumes are best-effort and can be evicted; every job must pass on a cold cache.
 
@@ -96,7 +100,7 @@ Volumes are best-effort and can be evicted; every job must pass on a cold cache.
    steps:
      - label: "Upload CI pipeline"
        agents:
-         queue: raftz-linux-amd64
+         queue: linux-medium
        command: buildkite-agent pipeline upload .buildkite/pipeline.yml
        timeout_in_minutes: 5
    ```
@@ -142,7 +146,7 @@ Create a second pipeline, for example `raftz-nightly`, with this initial step:
 steps:
   - label: "Upload nightly pipeline"
     agents:
-      queue: raftz-linux-amd64
+      queue: linux-medium
     command: buildkite-agent pipeline upload .buildkite/nightly.yml
     timeout_in_minutes: 5
 ```
@@ -184,8 +188,11 @@ They are not a substitute for server-side pipeline acceptance or hosted runs.
 
 Before changing required checks or removing any GitHub workflow:
 
-- Run all 16 regular jobs and all 5 nightly jobs on the hosted queues. Confirm
-  that the ARM jobs really report `aarch64` and TSan runs on `x86_64`.
+- Run all 14 regular jobs and all 5 nightly jobs on `linux-medium`; confirm
+  their actual OS/architecture is Linux `x86_64`.
+- Restore Linux ARM64 Debug and ReleaseSafe jobs on a Linux ARM64 queue and
+  validate their architecture before replacing GitHub's dual-architecture CI.
+  The current AMD64-only Buildkite pipeline is not full architecture parity.
 - Validate main push, PR open/update, manual builds, the UTC schedule, and rapid
   successive pushes/cancellation. Verify fork policy separately.
 - Resolve PR merge-commit parity and the OS/kernel differences described above.

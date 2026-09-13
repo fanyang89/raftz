@@ -1,5 +1,5 @@
 agents:
-  queue: raftz-linux-amd64
+  queue: linux-medium
 
 cache:
   paths:
