@@ -104,13 +104,32 @@ class TraceTests(unittest.TestCase):
         self.assertIn("CHECK_DEADLOCK TRUE", cfg)
         self.assertNotIn("CONSTRAINT", cfg)
 
+    def completion_output(self, queue):
+        return ('<<"RAFTZ_TRACE_COMPLETE", 7>>\nModel checking completed. No error has been found.\n'
+                f'9 states generated, 8 distinct states found, {queue} states left on queue.')
+
     def test_completion_requires_exact_terminal_and_exhaustion(self):
-        text = '<<"RAFTZ_TRACE_COMPLETE", 7>>\nModel checking completed. No error has been found.\n0 states left on queue.'
+        text = self.completion_output(0)
         self.assertTrue(trace.completed(0, text, 7))
         self.assertFalse(trace.completed(0, text, 8))
         self.assertFalse(trace.completed(1, text, 7))
-        self.assertFalse(trace.completed(0, text.replace("0 states", "1 states"), 7))
         self.assertFalse(trace.completed(0, text.replace("RAFTZ_TRACE_COMPLETE", "Progress %"), 7))
+
+    def test_completion_rejects_nonzero_queue(self):
+        for queue in (1, 10, 100):
+            with self.subTest(queue=queue):
+                self.assertFalse(trace.completed(0, self.completion_output(queue), 7))
+
+    def test_completion_uses_final_statistics(self):
+        text = self.completion_output(0) + '\n' + self.completion_output(10)
+        self.assertFalse(trace.completed(0, text, 7))
+
+    def test_completion_requires_statistics_line(self):
+        text = self.completion_output(0)
+        for replacement in ('', '0 states left on queue.',
+                            'Progress(8): 9 states generated, 8 distinct states found, 0 states left on queue.'):
+            with self.subTest(replacement=replacement):
+                self.assertFalse(trace.completed(0, text.rsplit('\n', 1)[0] + '\n' + replacement, 7))
 
     def test_timeout_is_not_a_semantic_negative(self):
         import subprocess

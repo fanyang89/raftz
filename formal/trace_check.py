@@ -6,6 +6,7 @@ from collections import Counter
 import copy
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -233,9 +234,12 @@ def validate(path, timeout=60):
 
 
 def completed(returncode, text, count):
+    queues = re.findall(
+        r"^[0-9]+ states generated, [0-9]+ distinct states found, ([0-9]+) states left on queue\.$",
+        text, re.MULTILINE)
     return (returncode == 0 and f'<<"RAFTZ_TRACE_COMPLETE", {count}>>' in text
             and "Model checking completed. No error has been found." in text
-            and "0 states left on queue." in text)
+            and bool(queues) and int(queues[-1]) == 0)
 
 
 class ConformanceError(RuntimeError):
