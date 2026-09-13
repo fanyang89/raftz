@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/etcd-io/raft",
+  "revision": "3cbf6a74be3fa392edd8b64253fcd11c3ce5649b",
+  "files": {
+    "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "tla/README.md": "97a96cd4fcc5429da35a7d36e2c8fbca01cebbac844c0c88188a75a1d9fd1e78",
+    "tla/etcdraft.tla": "15c445684529c59a59877951c7fb7df9a40da250aaa445f056ef48f56bb27044",
+    "tla/etcdraft.cfg": "0279cc6c7c100f622e30230ad56d383eb9d9bd8ac99c996fe707710106a9960e",
+    "tla/MCetcdraft.tla": "3b206581c4d1e8795b543f6bec1c293ea69241183acbdec6537c0265234a72b6",
+    "tla/MCetcdraft.cfg": "5cc769549deb7acdf280a8b2600d87c88810c299f5102b15f5176f64a9ae04a9",
+    "tla/Traceetcdraft.tla": "93e46f774c6602674d6f6db90c75ddc4144cfadc101c2f1cb31fd1ce2e90b0bc",
+    "tla/Traceetcdraft.cfg": "f146d25a0311f6944f5f3b3a89dcd66409d7fc3aac9326373b7cebf70a0b1795"
+  }
+}

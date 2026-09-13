@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Download and verify pinned TLA+ tools"
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+exec python3 "$root/formal/check.py" prepare "$@"

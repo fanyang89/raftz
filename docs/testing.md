@@ -106,6 +106,19 @@ The focused tasks use `scripts/run-fuzz.sh` from a source checkout to run bounde
 iterations. A Zig fuzz reproducer written to `.zig-cache/f/crash` causes a
 non-zero exit so CI cannot silently accept a discovered crash.
 
+## TLA+ Baseline
+
+```bash
+mise run prepare-tla
+mise run test-tla
+```
+
+These independent tasks check the pinned upstream etcd TLA+ model: a one-node
+bounded exhaustive check and a three-node sampled simulation. They do not run in
+`mise run check` and do not validate Zig execution traces or constitute a TLAPS
+proof. See [formal verification](formal-verification.md) for implementation
+alignment and [the baseline guide](../formal/README.md) for bounds and results.
+
 ## Upstream Behavioral Inventory
 
 [`tests/upstream/README.md`](../tests/upstream/README.md) is the authoritative

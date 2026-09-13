@@ -1,0 +1,12 @@
+{
+  "tla2tools.jar": {
+    "url": "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar",
+    "sha256": "db131ddb48e7004d823bef4493df7b35694babe37505b9d9fa5685e7a331f1f1",
+    "checksum_source": "https://api.github.com/repos/tlaplus/tlaplus/releases/tags/v1.8.0"
+  },
+  "CommunityModules-deps.jar": {
+    "url": "https://github.com/tlaplus/CommunityModules/releases/download/202609120237/CommunityModules-deps.jar",
+    "sha256": "3d9a282c360e90d55e9bbe99caa2987d508fef1556d652760b4af4455e283733",
+    "checksum_source": "https://api.github.com/repos/tlaplus/CommunityModules/releases/tags/202609120237"
+  }
+}
