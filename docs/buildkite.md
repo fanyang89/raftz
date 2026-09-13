@@ -15,10 +15,12 @@ integration settings in Buildkite.
 The regular pipeline preserves the existing test commands, optimization modes,
 fuzz budgets, and job timeouts. It uses the overall Buildkite pipeline status
 instead of a separate GitHub Actions `Required` aggregation job. No test is
-soft-failed, and a failing test does not cancel its siblings. Agent-managed
-`artifact_paths` uploads fuzz reproducers and coverage reports after the command,
-including failed commands. Forced cancellation or agent loss can prevent uploads;
-verify the failure path on the hosted agents before cutover.
+soft-failed, and a failing test does not cancel its siblings.
+`.buildkite/scripts/with-fuzz-artifacts.sh` uploads fuzz reproducers only when
+the wrapped command fails, matching the GitHub Actions `if: failure()`
+semantics; the coverage report is always archived through `artifact_paths`.
+Forced cancellation or agent loss can prevent uploads; verify the failure path
+on the hosted agents before cutover.
 
 ## Hosted queues
 
@@ -55,8 +57,26 @@ anything. It downloads mise 2026.9.1 with architecture-specific hashes taken fro
 the upstream `SHASUMS256.txt`, installs the tools in `mise.toml`, and uses
 `mise exec` to supply PATH to every command. Zig remains pinned to 0.16.0.
 Downloads require access to GitHub releases/codeload and the configured tool
-registries. There is no custom shared cache during the initial migration.
-Temporary directories respect an existing `TMPDIR`, otherwise use `$HOME/tmp`.
+registries. Temporary directories respect an existing `TMPDIR`, otherwise use
+`$HOME/tmp`.
+
+## Caching
+
+Both pipelines define a Buildkite hosted-agent cache volume holding
+`.zig-cache` and `/tmp/raftz-ci-cache`. `run.sh` points `MISE_DATA_DIR` and
+`ZIG_GLOBAL_CACHE_DIR` into that directory, so tool downloads (mise, Zig,
+actionlint, zigcli), Zig package fetches (for example the pinned gperftools
+fork), and the local build cache survive across jobs. Without a mounted volume
+these are ordinary temporary directories and builds simply run cold.
+
+Volume names interpolate `${BUILDKITE_BRANCH}`, so each branch gets its own
+volume and one branch's jobs cannot read or replace another branch's cache.
+The ARM64 core steps use an `-arm64-` volume because `MISE_DATA_DIR` contains
+architecture-specific binaries; the Zig caches are content-addressed and would
+be safe to share. A fork PR built from a branch whose name matches a trusted
+branch (for example `main`) shares that branch's volume, so fork PR builds
+must stay approval-gated as described below. Volumes are best-effort and can
+be evicted; every job must still pass on a cold cache.
 
 ## Connect the regular pipeline
 
@@ -103,9 +123,11 @@ strategy is implemented and tested. This is a cutover blocker, not test parity.
 Third-party fork PR builds require a separate provider setting. Enable them only
 after configuring an appropriate approval/isolation policy. They execute
 untrusted repository code, including mise configuration and pipeline changes.
-Restrict queue/cluster access, do not attach deployment/cloud secrets, do not
-provide a Codecov token, and do not reuse trusted-job writable caches. A
-repository shell script is not a security boundary against a malicious PR.
+Restrict queue/cluster access, do not attach deployment/cloud secrets, and do
+not provide a Codecov token. Cache volumes are branch-scoped, but a fork branch
+named like a trusted branch shares that branch's volume; keep fork builds
+approval-gated so untrusted code cannot poison a trusted cache. A repository
+shell script is not a security boundary against a malicious PR.
 
 ## Connect nightly fuzzing
 
@@ -146,9 +168,7 @@ integration is a cutover blocker.
 Run locally with `buildkite-agent` and Python 3 installed:
 
 ```bash
-mise run fmt-check
-mise run ci-lint
-mise run ci-lint-buildkite
+mise run ci-lint-all
 ```
 
 The Buildkite task checks shell syntax, uses native agent `pipeline upload
@@ -180,4 +200,5 @@ Before changing required checks or removing any GitHub workflow:
 - [Linux hosted agents](https://buildkite.com/docs/agent/buildkite-hosted/linux)
 - [GitHub integration and PR checkout](https://buildkite.com/docs/pipelines/source-control/github)
 - [Build artifacts](https://buildkite.com/docs/pipelines/configure/artifacts)
+- [Cache volumes](https://buildkite.com/docs/pipelines/hosted-agents/cache-volumes)
 - [Canceling builds](https://buildkite.com/docs/pipelines/configure/canceling-builds)

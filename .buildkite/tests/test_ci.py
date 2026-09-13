@@ -50,14 +50,23 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(len(match), 1)
                 self.assertEqual(match[0]["agents"]["queue"], f"raftz-linux-{queue}")
         commands = "\n".join(job["command"] for job in expanded)
-        for task in ["fmt-check", "ci-lint", "ci-lint-buildkite", "test-tsan",
-                     "test-ubsan", "test-gperftools", "test-raft-sqlite",
-                     "test-libelection", "wal-durability", "fuzz-wal-crash"]:
+        self.assertIn("mise run ci-lint-all", commands)
+        self.assertIn("mise run test-wal-crash", commands)
+        for task in ["test-tsan", "test-ubsan", "test-gperftools",
+                     "test-raft-sqlite", "test-libelection"]:
             self.assertIn(f"mise run {task}", commands)
         self.assertIn("bash .buildkite/scripts/coverage.sh", commands)
         for target in ["codec", "wal", "confchange"]:
             self.assertIn(f"fuzz-{target} 100K", commands)
         self.assertIn("fuzz-sim 10K", commands)
+
+    def test_composite_tasks(self):
+        lint = (ROOT / ".mise/tasks/ci-lint-all").read_text()
+        for task in ["fmt-check", "ci-lint", "ci-lint-buildkite"]:
+            self.assertIn(f"mise run {task}\n", lint)
+        wal = (ROOT / ".mise/tasks/test-wal-crash").read_text()
+        self.assertIn("mise run wal-durability\n", wal)
+        self.assertIn("mise run fuzz-wal-crash\n", wal)
 
     def test_nightly_workloads(self):
         expanded = list(jobs(load_pipeline("nightly.yml")))
@@ -67,9 +76,31 @@ class PipelineTests(unittest.TestCase):
                              ("confchange", "1M"), ("sim", "100K"),
                              ("wal-crash", "10K")]:
             self.assertIn(
-                f"bash .buildkite/scripts/run.sh x86_64 scripts/run-fuzz.sh fuzz-{target} {runs}",
+                "bash .buildkite/scripts/run.sh x86_64 "
+                "bash .buildkite/scripts/with-fuzz-artifacts.sh "
+                f"scripts/run-fuzz.sh fuzz-{target} {runs}",
                 commands,
             )
+
+    def test_fuzz_artifact_wrapper(self):
+        script_path = ROOT / ".buildkite/scripts/with-fuzz-artifacts.sh"
+        self.assertTrue(os.access(script_path, os.X_OK))
+        script = script_path.read_text()
+        self.assertIn("buildkite-agent artifact upload", script)
+        for pattern in ARTIFACTS:
+            self.assertIn(pattern, script)
+
+    def test_cache_volumes(self):
+        for name in ["pipeline.yml", "nightly.yml"]:
+            cache = load_pipeline(name)["cache"]
+            self.assertIn(".zig-cache", cache["paths"])
+            self.assertIn("/tmp/raftz-ci-cache", cache["paths"])
+            self.assertIn("${BUILDKITE_BRANCH}", cache["name"])
+        pipeline = load_pipeline("pipeline.yml")
+        arm = [s for s in pipeline["steps"] if s["key"] == "core-arm64"]
+        self.assertEqual(len(arm), 1)
+        self.assertEqual(arm[0]["cache"]["paths"], pipeline["cache"]["paths"])
+        self.assertIn("arm64", arm[0]["cache"]["name"])
 
     def test_failure_and_artifact_contract(self):
         for name in ["pipeline.yml", "nightly.yml"]:
@@ -81,9 +112,11 @@ class PipelineTests(unittest.TestCase):
                 self.assertNotIn("skip", job)
                 self.assertNotIn("if", job)
                 self.assertNotIn("cancel_on_build_failing", job)
+                self.assertNotIn("bash -c", job["command"])
                 self.assertGreater(job["timeout_in_minutes"], 0)
                 if job["key"].startswith("fuzz") or job["key"] == "wal-durability":
-                    self.assertEqual(set(job["artifact_paths"]), ARTIFACTS)
+                    self.assertNotIn("artifact_paths", job)
+                    self.assertIn("with-fuzz-artifacts.sh", job["command"])
                 if job["key"] == "coverage":
                     self.assertIn("zig-out/coverage/**/*", job["artifact_paths"])
                 if job["key"] != "core-arm64":

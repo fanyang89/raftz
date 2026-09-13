@@ -1,10 +1,16 @@
 agents:
   queue: raftz-linux-amd64
 
+cache:
+  paths:
+    - ".zig-cache"
+    - "/tmp/raftz-ci-cache"
+  name: "${BUILDKITE_BRANCH}-cache"
+
 steps:
   - label: "Lint"
     key: lint
-    command: bash .buildkite/scripts/run.sh x86_64 bash -c 'mise run fmt-check && mise run ci-lint && mise run ci-lint-buildkite'
+    command: bash .buildkite/scripts/run.sh x86_64 mise run ci-lint-all
     timeout_in_minutes: 10
 
   - label: "Core (x86_64, {{matrix}})"
@@ -17,6 +23,11 @@ steps:
     key: core-arm64
     agents:
       queue: raftz-linux-arm64
+    cache:
+      paths:
+        - ".zig-cache"
+        - "/tmp/raftz-ci-cache"
+      name: "${BUILDKITE_BRANCH}-arm64-cache"
     command: bash .buildkite/scripts/run.sh aarch64 zig build test -Doptimize={{matrix}} --summary all
     matrix: [Debug, ReleaseSafe]
     timeout_in_minutes: 30
@@ -51,25 +62,16 @@ steps:
 
   - label: "Fuzz ({{matrix}})"
     key: fuzz
-    command: bash .buildkite/scripts/run.sh x86_64 scripts/run-fuzz.sh fuzz-{{matrix}} 100K
+    command: bash .buildkite/scripts/run.sh x86_64 bash .buildkite/scripts/with-fuzz-artifacts.sh scripts/run-fuzz.sh fuzz-{{matrix}} 100K
     matrix: [codec, wal, confchange]
     timeout_in_minutes: 30
-    artifact_paths: &fuzz-artifacts
-      - crash-*
-      - leak-*
-      - oom-*
-      - timeout-*
-      - .zig-cache/f/**/*
-      - .zig-cache/tmp/libfuzzer.log
 
   - label: "Fuzz (sim)"
     key: fuzz-sim
-    command: bash .buildkite/scripts/run.sh x86_64 scripts/run-fuzz.sh fuzz-sim 10K
+    command: bash .buildkite/scripts/run.sh x86_64 bash .buildkite/scripts/with-fuzz-artifacts.sh scripts/run-fuzz.sh fuzz-sim 10K
     timeout_in_minutes: 30
-    artifact_paths: *fuzz-artifacts
 
   - label: "WAL durability and crash fuzz"
     key: wal-durability
-    command: bash .buildkite/scripts/run.sh x86_64 bash -c 'mise run wal-durability && mise run fuzz-wal-crash'
+    command: bash .buildkite/scripts/run.sh x86_64 bash .buildkite/scripts/with-fuzz-artifacts.sh mise run test-wal-crash
     timeout_in_minutes: 30
-    artifact_paths: *fuzz-artifacts

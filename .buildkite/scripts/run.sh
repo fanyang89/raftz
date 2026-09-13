@@ -31,6 +31,10 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$root"
 export CI=true MISE_YES=1
 export MISE_TRUSTED_CONFIG_PATHS="$root"
+# These paths live on the Buildkite cache volume when one is mounted; without a
+# volume they are ordinary temporary directories and caching is simply lost.
+export MISE_DATA_DIR=/tmp/raftz-ci-cache/mise
+export ZIG_GLOBAL_CACHE_DIR=/tmp/raftz-ci-cache/zig
 temporary_root=${TMPDIR:-$HOME/tmp}/pi
 mkdir -p "$temporary_root"
 work=$(mktemp -d "$temporary_root/raftz-ci.XXXXXX")
