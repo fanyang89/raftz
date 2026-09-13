@@ -1,0 +1,12 @@
+FROM clojure:temurin-21-lein-2.13.0-noble@sha256:4d3b46b4b6d0aa29c03e819cdc814c993c43d75ec77e3d16616a0ba9bc9960c7
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata git openssh-client && rm -rf /var/lib/apt/lists/*
+WORKDIR /suite
+COPY project.clj ./
+RUN mkdir -p /keys /root/.ssh && touch /root/.ssh/known_hosts && lein deps
+RUN printf 'Host n1 n2 n3\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  BatchMode yes\n' > /root/.ssh/config
+COPY src src
+COPY test test
+ENV LEIN_ROOT=1
+ENTRYPOINT ["lein"]
+CMD ["test"]

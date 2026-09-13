@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p /run/sshd /root/.ssh /data
+cp /keys/id_rsa.pub /root/.ssh/authorized_keys
+chmod 700 /root/.ssh
+chmod 600 /root/.ssh/authorized_keys
+ssh-keygen -A
+printf '%s\n' "$NODE_ID" > /etc/raftz-node-id
+exec /usr/sbin/sshd -D -e -o PasswordAuthentication=no -o PermitRootLogin=prohibit-password -o PubkeyAcceptedAlgorithms=+ssh-rsa -o HostKeyAlgorithms=+ssh-rsa

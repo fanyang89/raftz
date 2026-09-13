@@ -1,0 +1,8 @@
+*
+!project.clj
+!src
+!src/**
+!test
+!test/**
+!docker
+!docker/**
