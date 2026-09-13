@@ -13,21 +13,26 @@
   (let [out (java.io.File/createTempFile "raftz-out-" ".log")
         err (java.io.File/createTempFile "raftz-err-" ".log")]
     (try
-      (let [process (-> (ProcessBuilder. ^java.util.List (vec argv))
+      (let [builder (-> (ProcessBuilder. ^java.util.List (vec argv))
                         (.redirectOutput out)
-                        (.redirectError err)
-                        (.start))]
-        (try
-          (let [done? (.waitFor process timeout-ms TimeUnit/MILLISECONDS)]
-            (when-not done?
-              (.destroyForcibly process)
-              (.waitFor process))
-            {:exit (.exitValue process) :out (slurp out) :err (slurp err)
-             :timeout? (not done?)})
-          (finally
-            (when (.isAlive process) (.destroyForcibly process)))))
-      (catch java.io.IOException e
-        {:exit -1 :out "" :err (.getMessage e) :not-started? true})
+                        (.redirectError err))
+            [process launch-error] (try
+                                     [(.start builder) nil]
+                                     (catch java.io.IOException e
+                                       [nil (.getMessage e)]))]
+        (if process
+          (try
+            (let [done? (.waitFor process timeout-ms TimeUnit/MILLISECONDS)]
+              (when-not done?
+                (.destroyForcibly process)
+                (.waitFor process))
+              {:exit (.exitValue process) :out (slurp out) :err (slurp err)
+               :timeout? (not done?)})
+            (catch java.io.IOException e
+              {:exit -1 :out "" :err (.getMessage e)})
+            (finally
+              (when (.isAlive process) (.destroyForcibly process))))
+          {:exit -1 :out "" :err launch-error :not-started? true}))
       (finally (io/delete-file out true) (io/delete-file err true)))))
 
 (defn parse-result [{:keys [exit out err timeout? not-started?]}]
@@ -77,14 +82,15 @@
           {:type :ok :read-value (integer-value (:integerValue (first values)))})
         (case (:code body)
           "EXECUTE_CODE_OK"
-          (let [results (:results body)
-                n (integer-value (get (first results) :rowsAffected "0"))]
-            (when-not (= 1 (count results))
-              (throw (ex-info "Expected one statement result" {})))
-            (cond
-              (= 1 n) {:type :ok}
-              (and (= :cas f) (= 0 n)) {:type :fail :error :cas-mismatch}
-              :else {:type :info :error :unexpected-row-count}))
+          (let [results (:results body)]
+            (when-not (and (vector? results) (= 1 (count results))
+                           (map? (first results)))
+              (throw (ex-info "Expected one statement result object" {})))
+            (let [n (integer-value (get (first results) :rowsAffected "0"))]
+              (cond
+                (= 1 n) {:type :ok}
+                (and (= :cas f) (= 0 n)) {:type :fail :error :cas-mismatch}
+                :else {:type :info :error :unexpected-row-count})))
           "EXECUTE_CODE_SQL_ERROR" {:type :fail :error :sql-error}
           "EXECUTE_CODE_INVALID_REQUEST" {:type :fail :error :invalid-request}
           "EXECUTE_CODE_REQUEST_CONFLICT" {:type :info :error :request-conflict}
