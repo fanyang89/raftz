@@ -41,13 +41,21 @@ before enabling all jobs. Each job should get an isolated hosted environment;
 do not share a writable checkout between concurrent jobs.
 
 The image needs Bash, Git, curl, CA certificates, tar, sha256sum, Python 3, and
-`buildkite-agent` on PATH. Coverage additionally requires apt-get and either root
-or passwordless `sudo -n` for installing build dependencies. It compiles the same
-pinned, SHA-256-verified kcov source as GitHub Actions, installs it into a unique
-temporary directory, and checks that the Cobertura report is nonempty. kcov must
-be permitted to trace child processes; verify ptrace/seccomp restrictions on the
-actual hosted image. TSan must also be validated against its kernel/security
-configuration.
+`buildkite-agent` on PATH. The bootstrap checks for C/C++ compilers, Make, CMake,
+Ninja, and pkg-config before downloading mise. If any are missing, it installs
+`build-essential`, `cmake`, `ninja-build`, and `pkg-config` with apt-get, requiring
+root or passwordless `sudo -n`. Installation errors stop the job before building;
+images that already supply all these tools do not require package installation.
+The native grpc-lite dependencies need these tools even when Zig is installed.
+
+Coverage additionally requires apt-get and root or passwordless `sudo -n` for
+its development libraries. It compiles the same pinned, SHA-256-verified kcov
+source as GitHub Actions, installs it into a unique temporary directory, and
+checks that the Cobertura report is nonempty. kcov requires `personality` with
+`ADDR_NO_RANDOMIZE` as well as child-process tracing. A hosted environment that
+rejects this syscall with `Operation not permitted` cannot run this pinned kcov;
+verify its ptrace/seccomp restrictions rather than suppressing the failure.
+TSan must also be validated against its kernel/security configuration.
 
 Buildkite currently documents its default Linux image as Ubuntu 22.04, whereas
 the GitHub jobs use Ubuntu 24.04. The pipeline does not assume these are identical.

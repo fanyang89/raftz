@@ -170,6 +170,8 @@ class BootstrapTests(unittest.TestCase):
             "SHA_STATUS": "0",
             "INSTALL_STATUS": "0",
         }
+        for tool in ["cc", "c++", "make", "cmake", "ninja", "pkg-config"]:
+            self.stub(tool, "exit 0")
         self.stub("uname", 'if [[ $1 == -s ]]; then echo "$FAKE_OS"; else echo "$FAKE_ARCH"; fi')
         self.stub("curl", 'printf "curl %s\\n" "$*" >> "$CALL_LOG"')
         self.stub("sha256sum", 'cat >/dev/null; exit "$SHA_STATUS"')

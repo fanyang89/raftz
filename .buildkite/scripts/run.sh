@@ -29,6 +29,7 @@ esac
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$root"
+bash .buildkite/scripts/install-deps.sh
 export CI=true MISE_YES=1
 export MISE_TRUSTED_CONFIG_PATHS="$root"
 # These paths live on the Buildkite cache volume when one is mounted; without a
