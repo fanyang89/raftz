@@ -208,8 +208,8 @@ leader-ack-before-persist, missing proposal operation (renumbered with a valid
 terminal), and message causality. Five structural negatives cover empty input,
 partial last line, missing terminal, unsupported event and appended suffix.
 Negatives are generated from the current real execution, not accepted/rejected
-by filename or hash. Seventeen focused adapter/runner tests plus ten existing
-runner tests pass. `mise run test` passes 789/789 default Zig tests separately;
+by filename or hash. Twenty focused adapter/runner tests (including exact final
+queue-count regressions) plus ten existing runner tests pass. `mise run test` passes 789/789 default Zig tests separately;
 the trace build passes 2/2 additional Zig tests. `mise run fmt-check`,
 `git diff --check`, and upstream checksums pass. The upstream `test-tla` baseline
 also passes: 34,573 generated / 4,650 distinct single-node states, and 100 sampled
