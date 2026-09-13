@@ -69,14 +69,19 @@ actionlint, zigcli), Zig package fetches (for example the pinned gperftools
 fork), and the local build cache survive across jobs. Without a mounted volume
 these are ordinary temporary directories and builds simply run cold.
 
-Volume names interpolate `${BUILDKITE_BRANCH}`, so each branch gets its own
-volume and one branch's jobs cannot read or replace another branch's cache.
-The ARM64 core steps use an `-arm64-` volume because `MISE_DATA_DIR` contains
-architecture-specific binaries; the Zig caches are content-addressed and would
-be safe to share. A fork PR built from a branch whose name matches a trusted
-branch (for example `main`) shares that branch's volume, so fork PR builds
-must stay approval-gated as described below. Volumes are best-effort and can
-be evicted; every job must still pass on a cold cache.
+Volume names use the resolved `${BUILDKITE_COMMIT}` SHA rather than the branch
+name. Buildkite permits only letters, numbers, and hyphens in cache names;
+branches such as `formal/etcd-tla-baseline` would otherwise fail server-side
+pipeline upload even though the agent's local dry run succeeds. Tests check
+interpolated names as well as native YAML parsing.
+
+Jobs and retries for the same commit can reuse these volumes, including across
+branches at that commit. New commits start with a separate cache; this deliberately
+trades cross-commit reuse for simple, collision-free source-revision keys. The
+ARM64 core steps use an `-arm64-` volume because `MISE_DATA_DIR` contains
+architecture-specific binaries. Nightly uses a separate `-nightly-` volume.
+Cache names are not an authorization boundary; fork builds remain approval-gated.
+Volumes are best-effort and can be evicted; every job must pass on a cold cache.
 
 ## Connect the regular pipeline
 
@@ -124,9 +129,9 @@ Third-party fork PR builds require a separate provider setting. Enable them only
 after configuring an appropriate approval/isolation policy. They execute
 untrusted repository code, including mise configuration and pipeline changes.
 Restrict queue/cluster access, do not attach deployment/cloud secrets, and do
-not provide a Codecov token. Cache volumes are branch-scoped, but a fork branch
-named like a trusted branch shares that branch's volume; keep fork builds
-approval-gated so untrusted code cannot poison a trusted cache. A repository
+not provide a Codecov token. Cache volumes are commit-scoped, not trust-scoped;
+keep fork builds approval-gated so untrusted execution cannot poison a trusted
+cache. A repository
 shell script is not a security boundary against a malicious PR.
 
 ## Connect nightly fuzzing

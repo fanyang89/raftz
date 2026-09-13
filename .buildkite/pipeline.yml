@@ -5,7 +5,7 @@ cache:
   paths:
     - ".zig-cache"
     - "/tmp/raftz-ci-cache"
-  name: "${BUILDKITE_BRANCH}-cache"
+  name: "raftz-${BUILDKITE_COMMIT}-cache"
 
 steps:
   - label: "Lint"
@@ -27,7 +27,7 @@ steps:
       paths:
         - ".zig-cache"
         - "/tmp/raftz-ci-cache"
-      name: "${BUILDKITE_BRANCH}-arm64-cache"
+      name: "raftz-${BUILDKITE_COMMIT}-arm64-cache"
     command: bash .buildkite/scripts/run.sh aarch64 zig build test -Doptimize={{matrix}} --summary all
     matrix: [Debug, ReleaseSafe]
     timeout_in_minutes: 30

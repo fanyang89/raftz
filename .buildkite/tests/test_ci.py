@@ -13,12 +13,15 @@ ARTIFACTS = {
 }
 
 
-def load_pipeline(name):
+def load_pipeline(name, environment=None):
+    command = ["buildkite-agent", "pipeline", "upload", "--dry-run",
+               "--agent-access-token", "dry-run-only"]
+    if environment is None:
+        command.append("--no-interpolation")
+    command.append(str(ROOT / ".buildkite" / name))
     result = subprocess.run(
-        ["buildkite-agent", "pipeline", "upload", "--dry-run",
-         "--no-interpolation", "--agent-access-token", "dry-run-only",
-         str(ROOT / ".buildkite" / name)],
-        cwd=ROOT, text=True, capture_output=True, check=True,
+        command, cwd=ROOT, env={**os.environ, **(environment or {})},
+        text=True, capture_output=True, check=True,
     )
     return json.loads(result.stdout)
 
@@ -95,12 +98,42 @@ class PipelineTests(unittest.TestCase):
             cache = load_pipeline(name)["cache"]
             self.assertIn(".zig-cache", cache["paths"])
             self.assertIn("/tmp/raftz-ci-cache", cache["paths"])
-            self.assertIn("${BUILDKITE_BRANCH}", cache["name"])
+            self.assertIn("${BUILDKITE_COMMIT}", cache["name"])
+            self.assertNotIn("${BUILDKITE_BRANCH}", cache["name"])
         pipeline = load_pipeline("pipeline.yml")
         arm = [s for s in pipeline["steps"] if s["key"] == "core-arm64"]
         self.assertEqual(len(arm), 1)
         self.assertEqual(arm[0]["cache"]["paths"], pipeline["cache"]["paths"])
         self.assertIn("arm64", arm[0]["cache"]["name"])
+
+    def test_cache_names_are_valid_after_interpolation(self):
+        commit = "a" * 40
+        for branch in ["formal/etcd-tla-baseline", "ci/cache_zig", "feature.v2"]:
+            for name in ["pipeline.yml", "nightly.yml"]:
+                with self.subTest(branch=branch, pipeline=name):
+                    pipeline = load_pipeline(name, {
+                        "BUILDKITE_BRANCH": branch, "BUILDKITE_COMMIT": commit,
+                    })
+                    caches = [pipeline["cache"], *[
+                        step["cache"] for step in pipeline["steps"] if "cache" in step
+                    ]]
+                    for cache in caches:
+                        self.assertRegex(cache["name"], r"^[A-Za-z0-9-]+$")
+                        self.assertIn(commit, cache["name"])
+
+    def test_cache_names_separate_commits_architectures_and_nightly(self):
+        names_by_commit = []
+        for commit in ["a" * 40, "b" * 40]:
+            environment = {"BUILDKITE_BRANCH": "formal/etcd-tla-baseline",
+                           "BUILDKITE_COMMIT": commit}
+            regular = load_pipeline("pipeline.yml", environment)
+            nightly = load_pipeline("nightly.yml", environment)
+            names = [regular["cache"]["name"], nightly["cache"]["name"]]
+            names.extend(step["cache"]["name"] for step in regular["steps"] if "cache" in step)
+            self.assertEqual(len(names), 3)
+            self.assertEqual(len(set(names)), 3)
+            names_by_commit.append(set(names))
+        self.assertTrue(names_by_commit[0].isdisjoint(names_by_commit[1]))
 
     def test_failure_and_artifact_contract(self):
         for name in ["pipeline.yml", "nightly.yml"]:
