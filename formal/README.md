@@ -3,8 +3,10 @@
 ## Status and assurance boundary
 
 This directory imports a pinned, unmodified etcd Raft specification and provides
-reproducible baseline checks. It does **not** prove the correctness of raftz's Zig
-implementation. No raftz execution traces are validated yet. No TLAPS proof is
+reproducible baseline checks plus a [real RawNode trace conformance slice](trace.md).
+Two deterministic three-voter Zig executions now pass complete TLC trace checks,
+including elections, commits, leader change/conflict repair and atomic restart.
+This does **not** prove correctness for all raftz executions. No TLAPS proof is
 included. A `THEOREM` declaration in an upstream module is not a checked proof.
 
 See [implementation alignment](../docs/formal-verification.md) for the source
@@ -24,9 +26,11 @@ selection, abstraction gaps, and staged acceptance criteria.
 - The two local `.cfg` files are modified derivatives of upstream
   `MCetcdraft.cfg`; their modification notices identify the local restrictions.
 
-The upstream trace modules are preserved as a reference for the next stage, not
-as an operational raftz trace validator. The large example trace and upstream
-scripts that download floating nightly/latest dependencies are not imported.
+The upstream trace modules are preserved unchanged as a reference. The local
+`RaftzTrace` adapter reuses etcdraft actions with explicit self-vote, self-match
+and persistence-boundary deltas; it does not use Traceetcdraft's length-only
+checks. See [the action mapping and coverage limits](trace.md). The large example
+trace and upstream scripts downloading floating dependencies are not imported.
 
 ## Run
 
@@ -36,6 +40,7 @@ No Python packages or global Java tools are installed.
 ```bash
 mise run prepare-tla
 mise run test-tla
+mise run test-tla-trace  # Real Zig executions and conformance, distinct from test-tla
 
 # Equivalent commands without mise:
 python3 formal/check.py prepare
@@ -100,7 +105,8 @@ Initial validation with the pinned tools and OpenJDK 25:
 | One-node bounded exhaustive check | 34,573 generated / 4,650 distinct states, depth 24, no errors |
 | Three-node simulation | 100 traces / 10,769 states, no errors |
 | Three-node exhaustive check | Not completed as part of baseline validation |
-| Zig trace conformance / TLAPS proof | Not implemented |
+| Zig trace conformance | Two real executions pass; 9 semantic and 5 structural negatives rejected; see [trace results](trace.md) |
+| TLAPS proof | Not implemented |
 
 These are baseline model results only. Neither bounded exploration nor sampled
 trace validation would establish correctness for all cluster sizes, terms,

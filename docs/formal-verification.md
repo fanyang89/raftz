@@ -71,23 +71,37 @@ refinements. Code locations refer to the baseline raftz commit `63436df`.
 - Retain all eight upstream invariants and document every local reduction.
 - See [`formal/README.md`](../formal/README.md) for commands and actual results.
 
-### 2. Fixed-membership Zig trace validation — planned
+### 2. Fixed-membership Zig trace validation — initial slice checked
 
-Use `tests/simulation_test.zig` and, after assessing its abstraction,
-`tests/vopr/raft_adapter.zig` as candidate scenario drivers. Drive real `RawNode`
-instances through elections, proposals, conflicts, partitions, duplicate/lost
-messages, leader changes and atomic-storage restarts.
+`mise run test-tla-trace` drives real `RawNode` instances with atomic
+`MemoryStorage` through two deterministic three-voter executions. Elections,
+proposals/commits, partition/loss/duplication, leader change, conflicting suffix
+repair and one atomic follower restart are checked by TLC. The separate driver
+`tests/tla_trace_test.zig` was selected after inspecting the simulation network
+and VOPR adapter so that real Ready, persistence, advance and release boundaries
+remain visible without including WAL/transport machinery or production hooks.
 
-Define an explicit abstraction map from Zig state and messages to TLA+ state.
-Instrument actual internal boundaries where a public call performs multiple
-steps, or justify composition/stuttering in the adapter. Preserve the existing
-production logging contract: trace output belongs to an opt-in test hook/sink,
-not direct stdout/stderr writes in production code.
+The local `RaftzTrace` wrapper reuses upstream etcdraft actions. Full term, vote,
+role, log payload/context identity, commit, stored state/log and message bags are
+compared after each public operation. Synchronous self vote, persisted self match,
+leader/no-op/commit composition, getReady stuttering and the split persistence/
+release actions have explicit documented deltas. All eight upstream invariants
+are retained, including on model microsteps. Every instruction is bound to its
+concrete operation/input; there is no unrestricted model search to explain a bad
+observation. Production consensus behavior and logging are unchanged.
 
-Acceptance requires complete traces that reach a validator end marker, plus
-negative fixtures that corrupt term/vote, committed entries, and durability
-ordering and are rejected. Add a CI task only after this gate exists and is
-reproducible. The present `test-tla` task is **not** that gate.
+Both complete traces pass; nine schema-valid semantic mutations are rejected by
+TLC, and five malformed/truncated/unsupported-input mutations fail closed. The
+runner requires the exact terminal marker and complete TLC exploration, not
+merely absence of an invariant error. The new mise gate is runnable but not
+implicitly added to default Zig tests or CI. `test-tla` remains the separate
+**model-only** baseline check.
+
+This first slice deliberately holds even permitted early leader messages until
+after persistence. It does not verify asynchronous/interleaved Ready scheduling,
+Raftor's production loop, partial durability, or all internal Zig instructions
+within a composed call. See the [precise mapping, commands, real scenario counts,
+negative results and residual gaps](../formal/trace.md).
 
 ### 3. Feature and storage extensions — planned
 

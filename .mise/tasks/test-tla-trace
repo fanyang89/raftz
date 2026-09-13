@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Run real RawNode traces through TLA+ conformance, including semantic negatives"
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$root"
+mkdir -p .cache/tla
+zig build test-tla-trace --summary all
+PYTHONDONTWRITEBYTECODE=1 python3 formal/trace_check.py \
+  .cache/tla/election.ndjson .cache/tla/conflict.ndjson --negatives "$@"
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s formal -p 'test_*.py'
