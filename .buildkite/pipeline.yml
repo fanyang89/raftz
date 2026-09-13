@@ -1,0 +1,77 @@
+agents:
+  queue: raftz-linux-amd64
+
+cache:
+  paths:
+    - ".zig-cache"
+    - "/tmp/raftz-ci-cache"
+  name: "${BUILDKITE_BRANCH}-cache"
+
+steps:
+  - label: "Lint"
+    key: lint
+    command: bash .buildkite/scripts/run.sh x86_64 mise run ci-lint-all
+    timeout_in_minutes: 10
+
+  - label: "Core (x86_64, {{matrix}})"
+    key: core-amd64
+    command: bash .buildkite/scripts/run.sh x86_64 zig build test -Doptimize={{matrix}} --summary all
+    matrix: [Debug, ReleaseSafe]
+    timeout_in_minutes: 30
+
+  - label: "Core (aarch64, {{matrix}})"
+    key: core-arm64
+    agents:
+      queue: raftz-linux-arm64
+    cache:
+      paths:
+        - ".zig-cache"
+        - "/tmp/raftz-ci-cache"
+      name: "${BUILDKITE_BRANCH}-arm64-cache"
+    command: bash .buildkite/scripts/run.sh aarch64 zig build test -Doptimize={{matrix}} --summary all
+    matrix: [Debug, ReleaseSafe]
+    timeout_in_minutes: 30
+
+  - label: "Coverage"
+    key: coverage
+    command: bash .buildkite/scripts/run.sh x86_64 bash .buildkite/scripts/coverage.sh
+    timeout_in_minutes: 60
+    artifact_paths:
+      - zig-out/coverage/**/*
+
+  - label: "raft-sqlite example"
+    key: raft-sqlite
+    command: bash .buildkite/scripts/run.sh x86_64 mise run test-raft-sqlite
+    timeout_in_minutes: 30
+
+  - label: "libelection C SDK example"
+    key: libelection
+    command: bash .buildkite/scripts/run.sh x86_64 mise run test-libelection
+    timeout_in_minutes: 30
+
+  - label: "Sanitizer ({{matrix}})"
+    key: sanitizer
+    command: bash .buildkite/scripts/run.sh x86_64 mise run test-{{matrix}}
+    matrix: [tsan, ubsan]
+    timeout_in_minutes: 60
+
+  - label: "Gperftools"
+    key: gperftools
+    command: bash .buildkite/scripts/run.sh x86_64 mise run test-gperftools
+    timeout_in_minutes: 30
+
+  - label: "Fuzz ({{matrix}})"
+    key: fuzz
+    command: bash .buildkite/scripts/run.sh x86_64 bash .buildkite/scripts/with-fuzz-artifacts.sh scripts/run-fuzz.sh fuzz-{{matrix}} 100K
+    matrix: [codec, wal, confchange]
+    timeout_in_minutes: 30
+
+  - label: "Fuzz (sim)"
+    key: fuzz-sim
+    command: bash .buildkite/scripts/run.sh x86_64 bash .buildkite/scripts/with-fuzz-artifacts.sh scripts/run-fuzz.sh fuzz-sim 10K
+    timeout_in_minutes: 30
+
+  - label: "WAL durability and crash fuzz"
+    key: wal-durability
+    command: bash .buildkite/scripts/run.sh x86_64 bash .buildkite/scripts/with-fuzz-artifacts.sh mise run test-wal-crash
+    timeout_in_minutes: 30

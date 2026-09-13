@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#MISE description="Validate Buildkite pipelines and test CI scripts"
+set -euo pipefail
+
+if ! command -v buildkite-agent >/dev/null; then
+    printf 'buildkite-agent is required; see docs/buildkite.md\n' >&2
+    exit 1
+fi
+for script in .buildkite/scripts/*.sh .mise/tasks/ci-lint-buildkite; do
+    bash -n "$script"
+done
+python3 -B -m unittest discover -s .buildkite/tests -v
