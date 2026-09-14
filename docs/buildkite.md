@@ -40,28 +40,45 @@ tests. Restrict pipeline access to this queue and set concurrency/budget limits
 before enabling all jobs. Each job should get an isolated hosted environment;
 do not share a writable checkout between concurrent jobs.
 
-The image needs Bash, Git, curl, CA certificates, tar, sha256sum, Python 3, and
-`buildkite-agent` on PATH. The bootstrap checks for C/C++ compilers, Make, CMake,
+The agent image needs Bash, Git, curl, CA certificates, tar, sha256sum, Python 3,
+`buildkite-agent`, and a working Linux AMD64 Docker daemon/client. The bootstrap checks for C/C++ compilers, Make, CMake,
 Ninja, and pkg-config before downloading mise. If any are missing, it installs
 `build-essential`, `cmake`, `ninja-build`, and `pkg-config` with apt-get, requiring
 root or passwordless `sudo -n`. Installation errors stop the job before building;
 images that already supply all these tools do not require package installation.
 The native grpc-lite dependencies need these tools even when Zig is installed.
 
-Coverage additionally requires apt-get and root or passwordless `sudo -n` for
-its development libraries. It compiles the same pinned, SHA-256-verified kcov
-source as GitHub Actions, installs it into a unique temporary directory, and
-checks that the Cobertura report is nonempty. kcov requires `personality` with
-`ADDR_NO_RANDOMIZE` as well as child-process tracing. A hosted environment that
-rejects this syscall with `Operation not permitted` cannot run this pinned kcov;
-verify its ptrace/seccomp restrictions rather than suppressing the failure.
-TSan must also be validated against its kernel/security configuration.
+The eight expanded runtime jobs (Core, Coverage, both examples, sanitizers, and
+gperftools) use `in-container.sh` to build and run an Ubuntu 24.04 test container
+**inside the existing Buildkite hosted job**. There is no self-hosted agent,
+external VM, new queue, or service installation. The Linux AMD64 Ubuntu base is
+pinned by its upstream registry digest in `.buildkite/container/Dockerfile`.
+The image includes native build tools and UTC timezone data; the default hosted
+image's missing `/etc/localtime` otherwise breaks the logger tests. Lint, fuzz,
+and WAL durability jobs retain their direct hosted execution and artifact wrapper.
 
-Buildkite currently documents its default Linux image as Ubuntu 22.04, whereas
-the GitHub jobs use Ubuntu 24.04. The pipeline does not assume these are identical.
-Record the selected image and run the acceptance checks below; use a custom
-Ubuntu 24.04 hosted image if matching the existing OS is necessary. Do not
-silently disable sanitizer or coverage failures to accommodate an image.
+The container uses a hash-verified, pinned Moby default seccomp profile with only
+two additional rules: `personality(ADDR_NO_RANDOMIZE)` for the native AMD64
+personality, and the three io_uring syscalls. All upstream restrictions remain;
+there is no `--privileged`, `seccomp=unconfined`, extra Linux capability, host ASLR
+change, or Docker socket mount. Only the checkout and CI cache are bind-mounted;
+agent credentials are not forwarded. The memlock limit is 64 MiB. See the
+[upstream profile provenance](../.buildkite/container/moby/README.md).
+
+Before downloading mise or compiling tests, a native probe checks `/etc/localtime`,
+setting and restoring the process personality, opening an io_uring instance, and
+tracing a child process. Any failed probe, container build, or test fails the job.
+Container permissions cannot override a hosted kernel restriction: if the probe
+still fails, retain its exact error and consult Buildkite rather than disabling
+checks or falling back to a different execution environment. The full hosted tests,
+not this small probe alone, establish whether the environment is compatible.
+
+Coverage installs its development libraries inside this container and compiles
+the same pinned, SHA-256-verified kcov source as GitHub Actions. It installs kcov
+into a unique temporary directory and checks that the Cobertura report is
+nonempty. Reports remain in the mounted checkout for the hosted agent to upload.
+The container is removed on completion; ordinary wrapper exits also attempt
+cleanup. Forced host loss relies on Buildkite destroying the job environment.
 
 `.buildkite/scripts/run.sh` checks the actual OS/architecture before downloading
 anything. It downloads mise 2026.9.1 with architecture-specific hashes taken from

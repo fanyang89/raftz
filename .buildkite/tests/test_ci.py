@@ -46,6 +46,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual({job["key"] for job in core}, {"core-amd64"})
         for mode in ["Debug", "ReleaseSafe"]:
             command = (
+                "bash .buildkite/scripts/in-container.sh "
                 "bash .buildkite/scripts/run.sh x86_64 zig build test "
                 f"-Doptimize={mode} --summary all"
             )
@@ -62,6 +63,14 @@ class PipelineTests(unittest.TestCase):
         for target in ["codec", "wal", "confchange"]:
             self.assertIn(f"fuzz-{target} 100K", commands)
         self.assertIn("fuzz-sim 10K", commands)
+
+    def test_runtime_jobs_use_hosted_containers(self):
+        container_keys = {"core-amd64", "coverage", "raft-sqlite", "libelection", "sanitizer", "gperftools"}
+        for name in ["pipeline.yml", "nightly.yml"]:
+            for job in jobs(load_pipeline(name)):
+                wrapped = job["command"].startswith("bash .buildkite/scripts/in-container.sh ")
+                self.assertEqual(wrapped, name == "pipeline.yml" and job["key"] in container_keys)
+                self.assertEqual(job["agents"]["queue"], "linux-medium")
 
     def test_composite_tasks(self):
         lint = (ROOT / ".mise/tasks/ci-lint-all").read_text()
