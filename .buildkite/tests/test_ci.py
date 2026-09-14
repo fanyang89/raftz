@@ -55,7 +55,34 @@ class GitHubWorkflowTests(unittest.TestCase):
         self.assertIn("fail-fast: false", core.group(1))
 
 
+    def test_build_jobs_prefetch_dependencies_before_tests(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        commands = {
+            "core-test": "zig build test",
+            "coverage": "mise run coverage",
+            "raft-sqlite-example": "mise run test-raft-sqlite",
+            "libelection-example": "mise run test-libelection",
+            "sanitizer": "mise run ${{ matrix.task }}",
+            "gperftools": "mise run test-gperftools",
+            "fuzz": "scripts/run-fuzz.sh",
+            "wal-durability": "mise run wal-durability",
+        }
+        for key, command in commands.items():
+            with self.subTest(job=key):
+                job = re.search(rf"(?ms)^  {key}:\n(.*?)(?=^  [\w-]+:|\Z)", workflow)
+                self.assertIsNotNone(job)
+                body = job.group(1)
+                self.assertLess(body.index("run: scripts/prepare-ci-zig-cache.sh"),
+                                body.index(f"run: {command}"))
+                self.assertNotIn("continue-on-error", body)
+
+
 class PipelineTests(unittest.TestCase):
+    def test_only_lint_skips_dependency_prefetch(self):
+        for name in ["pipeline.yml", "nightly.yml"]:
+            for job in jobs(load_pipeline(name)):
+                self.assertEqual("--skip-prefetch" in job["command"], job["key"] == "lint")
+
     def test_regular_workloads(self):
         pipeline = load_pipeline("pipeline.yml")
         expanded = list(jobs(pipeline))
@@ -217,6 +244,9 @@ printf 'mise %s\\n' "$*" >> "$CALL_LOG"
 if [[ $1 == install ]]; then exit "$INSTALL_STATUS"; fi
 [[ $1 == exec && $2 == -- ]]
 shift 2
+if [[ $1 == bash && ${2:-} == scripts/prepare-ci-zig-cache.sh ]]; then
+    exit "${PREFETCH_STATUS:-0}"
+fi
 "$@"
 ''')
 
@@ -253,6 +283,27 @@ shift 2
         self.env["INSTALL_STATUS"] = "19"
         self.assertEqual(self.run_command().returncode, 19)
         self.assertNotIn("mise exec", self.log.read_text())
+
+    def test_prefetch_runs_before_command(self):
+        result = self.run_command()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.log.read_text().splitlines()
+        prefetch = calls.index("mise exec -- bash scripts/prepare-ci-zig-cache.sh")
+        self.assertLess(calls.index("mise install"), prefetch)
+        self.assertLess(prefetch, calls.index("mise exec -- bash -c exit 0"))
+
+    def test_prefetch_failure_stops_command(self):
+        self.env["PREFETCH_STATUS"] = "29"
+        result = self.run_command()
+        self.assertEqual(result.returncode, 29, result.stderr)
+        self.assertNotIn("mise exec -- bash -c exit 0", self.log.read_text())
+        self.assertEqual(list((self.base / "tmp/pi").iterdir()), [])
+
+    def test_lint_can_skip_prefetch(self):
+        self.env["PREFETCH_STATUS"] = "29"
+        result = self.run_command(command=["--skip-prefetch", "bash", "-c", "exit 0"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("prepare-ci-zig-cache.sh", self.log.read_text())
 
     def test_preserves_exit_status_and_cleans_temporary_files(self):
         result = self.run_command(command=["bash", "-c", "exit 23"])

@@ -13,12 +13,14 @@ fetch_package() {
     local package_hash=$4
     local archive="$work_dir/$name.tar.gz"
 
+    printf 'Fetching Zig package %s\n' "$name"
     curl \
         --connect-timeout 20 \
         --fail \
         --location \
-        --max-time 300 \
+        --max-time 120 \
         --retry 5 \
+        --retry-max-time 180 \
         --retry-all-errors \
         --retry-delay 2 \
         --show-error \
@@ -26,7 +28,10 @@ fetch_package() {
         --output "$archive" \
         "$url"
     if [[ "$sha256" != - ]]; then
-        printf '%s  %s\n' "$sha256" "$archive" | sha256sum --check --status
+        if ! printf '%s  %s\n' "$sha256" "$archive" | sha256sum --check --status; then
+            printf 'unexpected archive SHA-256 for %s\n' "$name" >&2
+            return 1
+        fi
     fi
 
     local actual_hash

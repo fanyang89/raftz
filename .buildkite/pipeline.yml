@@ -10,7 +10,7 @@ cache:
 steps:
   - label: "Lint"
     key: lint
-    command: bash .buildkite/scripts/run.sh x86_64 mise run ci-lint-all
+    command: bash .buildkite/scripts/run.sh x86_64 --skip-prefetch mise run ci-lint-all
     timeout_in_minutes: 10
 
   - label: "Core (x86_64, {{matrix}})"

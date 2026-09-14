@@ -95,6 +95,23 @@ Downloads require access to GitHub releases/codeload and the configured tool
 registries. Temporary directories respect an existing `TMPDIR`, otherwise use
 `$HOME/tmp`.
 
+## Dependency preparation
+
+Before build or test commands, `run.sh` runs `scripts/prepare-ci-zig-cache.sh`
+through mise. The script downloads pinned archives with bounded curl retries
+and request timeouts, verifies every Zig package hash (and archive SHA-256 where
+recorded), then resolves remaining dependencies with `--fetch=needed`.
+A persistent download, integrity, or resolution failure stops the job before
+its command starts. Retries are confined to dependency preparation; test
+commands run once and retain their failure status. This handles transient GitHub release-asset 504s
+without changing package versions or using unchecked mirrors.
+
+The lint step alone passes `--skip-prefetch` after the architecture argument
+because it does not build dependencies. Regular GitHub build/test jobs use the
+same prefetch script; GitHub nightly retains its existing package-cache setup.
+Buildkite's prefetch and subsequent command share `ZIG_GLOBAL_CACHE_DIR`,
+including commands that enter an example directory.
+
 ## Caching
 
 Both pipelines define a Buildkite hosted-agent cache volume holding
