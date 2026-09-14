@@ -62,7 +62,9 @@ mise run test-tsan
 mise run test-ubsan
 ```
 
-CI runs Debug and ReleaseSafe on Linux x86_64 and arm64. TSan and C undefined
+CI runs Debug and ReleaseSafe on Linux x86_64. Linux ARM64 coverage is paused.
+Buildkite macOS ARM64 coverage is planned but not enabled; it is not equivalent
+to Linux ARM64 validation. TSan and C undefined
 behavior detection run as separate Linux jobs.
 
 Fast Raft invariant checks are enabled by default in Debug and ReleaseSafe.

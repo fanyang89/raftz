@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -34,6 +35,24 @@ def jobs(pipeline):
                 "command": step["command"].replace("{{matrix}}", value),
                 "agents": step.get("agents", pipeline["agents"]),
             }
+
+
+class GitHubWorkflowTests(unittest.TestCase):
+    def test_core_matrix_is_amd64_only_and_still_required(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        core = re.search(r"(?ms)^  core-test:\n(.*?)(?=^  [\w-]+:|\Z)", workflow)
+        self.assertIsNotNone(core)
+        entries = re.findall(
+            r"(?m)^\s+- arch: (\S+)\n\s+optimize: (\S+)\n\s+runner: (\S+)",
+            core.group(1),
+        )
+        self.assertEqual(entries, [
+            ("x86_64", "Debug", "ubuntu-24.04"),
+            ("x86_64", "ReleaseSafe", "ubuntu-24.04"),
+        ])
+        self.assertNotRegex(workflow, r"aarch64|arm64|ubuntu-\S+-arm\b")
+        self.assertIn("      - core-test\n", workflow)
+        self.assertIn("fail-fast: false", core.group(1))
 
 
 class PipelineTests(unittest.TestCase):

@@ -1,13 +1,20 @@
 # Buildkite CI
 
-Buildkite runs alongside GitHub Actions during the migration. The workflows in
-`.github/workflows/` and the existing GitHub required checks remain unchanged.
-Creating these files does not create queues, pipelines, schedules, or GitHub
-integration settings in Buildkite.
+Buildkite runs alongside GitHub Actions during the migration. GitHub's AMD64
+jobs, nightly fuzzing, coverage upload, and `Required` aggregation remain enabled
+until cutover validation is complete. Repository files do not create queues,
+pipelines, schedules, or GitHub integration settings in Buildkite.
 
-Buildkite temporarily runs Linux AMD64 only on the existing `linux-medium`
-queue. Linux ARM64 Debug and ReleaseSafe coverage remains in GitHub Actions.
-The available macOS ARM64 queues are not substitutes for Linux ARM64 jobs.
+Both CI systems currently run Linux AMD64 only. Buildkite uses the existing
+`linux-medium` queue. Linux ARM64 Debug and ReleaseSafe jobs have been removed
+from GitHub Actions by owner decision; ARM64 coverage is temporarily paused.
+
+Future ARM64 coverage is planned on Buildkite macOS hosted agents. It is not yet
+enabled and is not equivalent to Linux ARM64 validation. The current bootstrap
+rejects non-Linux hosts, and the default filesystem, Raftor loop, and grpc-lite
+transport depend on Linux support. A macOS job needs its own bootstrap and
+validated platform support or an explicitly documented test subset; changing
+only the queue name is insufficient.
 
 ## Pipelines
 
@@ -16,8 +23,8 @@ The available macOS ARM64 queues are not substitutes for Linux ARM64 jobs.
 | `.buildkite/pipeline.yml` | Lint, AMD64 core tests, coverage, both examples, sanitizers, gperftools, bounded fuzzing, WAL durability | 14 |
 | `.buildkite/nightly.yml` | Codec/WAL/confchange at 1M runs, simulation at 100K, WAL crash at 10K | 5 |
 
-Apart from the deferred Linux ARM64 jobs, the regular pipeline preserves the
-existing test commands, optimization modes, fuzz budgets, and job timeouts. It uses the overall Buildkite pipeline status
+The regular pipeline preserves the remaining Linux AMD64 test commands,
+optimization modes, fuzz budgets, and job timeouts. It uses the overall Buildkite pipeline status
 instead of a separate GitHub Actions `Required` aggregation job. No test is
 soft-failed, and a failing test does not cancel its siblings.
 `.buildkite/scripts/with-fuzz-artifacts.sh` uploads fuzz reproducers only when
@@ -106,9 +113,8 @@ interpolated names as well as native YAML parsing.
 Jobs and retries for the same commit can reuse these volumes, including across
 branches at that commit. New commits start with a separate cache; this deliberately
 trades cross-commit reuse for simple, collision-free source-revision keys.
-Nightly uses a separate `-nightly-` volume. If Linux ARM64 jobs are restored,
-give them a separate cache because `MISE_DATA_DIR` contains architecture-specific
-binaries.
+Nightly uses a separate `-nightly-` volume. Future macOS ARM64 jobs need separate
+caches because `MISE_DATA_DIR` contains OS- and architecture-specific binaries.
 Cache names are not an authorization boundary; fork builds remain approval-gated.
 Volumes are best-effort and can be evicted; every job must pass on a cold cache.
 
@@ -215,9 +221,9 @@ Before changing required checks or removing any GitHub workflow:
 
 - Run all 14 regular jobs and all 5 nightly jobs on `linux-medium`; confirm
   their actual OS/architecture is Linux `x86_64`.
-- Restore Linux ARM64 Debug and ReleaseSafe jobs on a Linux ARM64 queue and
-  validate their architecture before replacing GitHub's dual-architecture CI.
-  The current AMD64-only Buildkite pipeline is not full architecture parity.
+- Record the owner-approved pause of Linux ARM64 coverage. Do not describe
+  AMD64-only CI as dual-architecture validation. The future macOS ARM64 work is
+  separate from the AMD64 cutover and does not restore Linux ARM64 coverage.
 - Validate main push, PR open/update, manual builds, the UTC schedule, and rapid
   successive pushes/cancellation. Verify fork policy separately.
 - Resolve PR merge-commit parity and the OS/kernel differences described above.
