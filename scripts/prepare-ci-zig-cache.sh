@@ -39,10 +39,10 @@ fetch_package() {
 }
 
 fetch_package \
-    grpc-lite-d45f929d \
-    https://codeload.github.com/fanyang89/grpc-lite/tar.gz/d45f929dd73f927fd515aa3b6e3188fd9b6714f0 \
+    grpc-lite-c0d2207b \
+    https://codeload.github.com/fanyang89/grpc-lite/tar.gz/c0d2207bdb426243327a0f4f41d3983ae4e53e30 \
     - \
-    grpc_lite-0.4.0-BcwY0NQW9AGVwOldiYN_ZlF3bGreQl8PArikDoSzDE2n
+    grpc_lite-0.4.0-BcwY0BKEFQCZukihgaM1osxJ0WrNVtc5nBTtjU3V9PKW
 
 fetch_package \
     crc32c-2bbb3be4 \

@@ -22,7 +22,7 @@ pub fn createProtocStep(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     options: grpc_lite_build.protobuf_codegen.RunProtocStep.Options,
-) *grpc_lite_build.protobuf_codegen.RunProtocStep {
+) ?*grpc_lite_build.protobuf_codegen.RunProtocStep {
     return grpc_lite_build.createProtocStep(
         grpcLiteDependency(dependency, target, optimize),
         target,
