@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const grpc = @import("grpc_lite");
+const raft = @import("raftz");
 const pb = @import("database_proto");
 const client_mod = @import("client.zig");
 const config_mod = @import("config.zig");
@@ -473,22 +474,68 @@ fn makeClusterConfig(
     return config_mod.parseServer(allocator, &arguments);
 }
 
+fn agreedClusterLeader(statuses: *const [3]?raft.NodeStatus) ?usize {
+    var leader: ?usize = null;
+    var active: usize = 0;
+    for (statuses, 0..) |maybe_status, index| {
+        const status = maybe_status orelse continue;
+        active += 1;
+        if (status.role == .leader) {
+            if (leader != null) return null;
+            leader = index;
+        } else if (status.role != .follower) return null;
+    }
+    if (active < statuses.len / 2 + 1) return null;
+    const index = leader orelse return null;
+    const elected = statuses[index].?;
+    for (statuses) |maybe_status| {
+        const status = maybe_status orelse continue;
+        if (status.term != elected.term or status.leader_id != elected.id) return null;
+    }
+    return index;
+}
+
 fn waitForClusterLeader(runtimes: *[3]?*runtime_mod.Runtime) !usize {
+    var statuses: [3]?raft.NodeStatus = .{null} ** 3;
     for (0..1000) |_| {
-        var leader: ?usize = null;
-        var leaders: usize = 0;
         for (runtimes, 0..) |maybe_runtime, index| {
             const runtime = maybe_runtime orelse continue;
             if (runtime.driverExited()) return error.DriverExited;
-            if (runtime.status().role == .leader) {
-                leader = index;
-                leaders += 1;
-            }
+            statuses[index] = runtime.status();
         }
-        if (leaders == 1) return leader.?;
+        if (agreedClusterLeader(&statuses)) |leader| return leader;
         try std.testing.io.sleep(.fromMilliseconds(10), .awake);
     }
+    std.debug.print("Cluster leadership did not converge: {any}\n", .{statuses});
     return error.LeaderTimeout;
+}
+
+test "cluster leader selection waits for term and leader agreement" {
+    var statuses: [3]?raft.NodeStatus = .{
+        .{ .id = 1, .role = .leader, .term = 1, .leader_id = 1 },
+        .{ .id = 2, .role = .candidate, .term = 2 },
+        .{ .id = 3, .term = 2 },
+    };
+    try std.testing.expectEqual(null, agreedClusterLeader(&statuses));
+    statuses[1] = .{ .id = 2, .role = .leader, .term = 2, .leader_id = 2 };
+    try std.testing.expectEqual(null, agreedClusterLeader(&statuses));
+    statuses[0] = .{ .id = 1, .term = 1, .leader_id = 2 };
+    statuses[2].?.leader_id = 2;
+    try std.testing.expectEqual(null, agreedClusterLeader(&statuses));
+    statuses[0].?.term = 2;
+    statuses[2].?.leader_id = 0;
+    try std.testing.expectEqual(null, agreedClusterLeader(&statuses));
+    statuses[2].?.leader_id = 2;
+    try std.testing.expectEqual(@as(?usize, 1), agreedClusterLeader(&statuses));
+}
+
+test "cluster leader selection requires a quorum but ignores stopped nodes" {
+    var statuses: [3]?raft.NodeStatus = .{null} ** 3;
+    try std.testing.expectEqual(null, agreedClusterLeader(&statuses));
+    statuses[0] = .{ .id = 1, .role = .leader, .term = 3, .leader_id = 1 };
+    try std.testing.expectEqual(null, agreedClusterLeader(&statuses));
+    statuses[2] = .{ .id = 3, .term = 3, .leader_id = 1 };
+    try std.testing.expectEqual(@as(?usize, 0), agreedClusterLeader(&statuses));
 }
 
 fn executeSql(runtime: *runtime_mod.Runtime, request_id: []const u8, statements: []const []const u8) !void {
@@ -502,7 +549,12 @@ fn executeSql(runtime: *runtime_mod.Runtime, request_id: []const u8, statements:
     for (statements) |sql| try request.statements.append(arena.allocator(), .{ .sql = sql });
     var result = try client.execute(runtime_allocator, request);
     defer result.deinit();
-    try std.testing.expect(result.raw.status.isOk());
+    if (!result.raw.status.isOk()) {
+        std.debug.print("Execute {s} failed: {s}: {s}; node={any}\n", .{
+            request_id, @tagName(result.raw.status.code), result.raw.status.message, runtime.status(),
+        });
+    }
+    try std.testing.expectEqual(grpc.StatusCode.ok, result.raw.status.code);
     try std.testing.expectEqual(pb.ExecuteCode.EXECUTE_CODE_OK, result.response.?.code);
 }
 
