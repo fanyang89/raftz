@@ -15,6 +15,11 @@ SPEC.loader.exec_module(SECCOMP)
 
 
 class SeccompTests(unittest.TestCase):
+    def test_image_creates_tmpdir_before_package_configuration(self):
+        dockerfile = (ROOT / ".buildkite/container/Dockerfile").read_text()
+        self.assertIn("TMPDIR=/root/tmp", dockerfile)
+        self.assertLess(dockerfile.index("mkdir -p /root/tmp"), dockerfile.index("apt-get update"))
+
     def test_profile_preserves_upstream_and_only_adds_required_calls(self):
         original = json.loads(SECCOMP.UPSTREAM.read_bytes())
         profile = SECCOMP.make_profile()
@@ -119,6 +124,9 @@ elif args[0] != "rm":
         result = self.run_container()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.marker.read_text(), "two words")
+        build = next(call for call in self.calls() if call[0] == "build")
+        self.assertIn("--load", build)
+        self.assertIn("plain", build)
         run = next(call for call in self.calls() if call[0] == "run")
         self.assertIn("--init", run)
         self.assertIn("--rm", run)

@@ -29,7 +29,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 python3 .buildkite/container/seccomp.py "$work/seccomp.json"
-docker build --platform linux/amd64 --iidfile "$work/image-id" .buildkite/container
+docker build --load --progress plain --platform linux/amd64 --iidfile "$work/image-id" .buildkite/container
 test -s "$work/image-id"
 docker run --rm --init --platform linux/amd64 \
     --cidfile "$work/container-id" \
