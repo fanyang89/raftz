@@ -22,7 +22,7 @@ pub fn createProtocStep(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     options: grpc_lite_build.protobuf_codegen.RunProtocStep.Options,
-) *grpc_lite_build.protobuf_codegen.RunProtocStep {
+) ?*grpc_lite_build.protobuf_codegen.RunProtocStep {
     return grpc_lite_build.createProtocStep(
         grpcLiteDependency(dependency, target, optimize),
         target,
@@ -180,6 +180,18 @@ pub fn build(b: *std.Build) void {
     const multi_raft_ops_test_step = b.step("test-multi-raft-ops", "Run Multi-Raft operations interface tests");
     // Full-suite grpc processes are serialized to stay within host worker limits.
     var grpc_full_test_tail: *std.Build.Step = &run_unit_tests.step;
+    const tla_trace_module = b.createModule(.{
+        .root_source_file = b.path("tests/tla_trace_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "raftz", .module = raftz }},
+    });
+    const tla_trace_tests = b.addTest(.{ .name = "tla-trace", .root_module = tla_trace_module });
+    const run_tla_trace = b.addRunArtifact(tla_trace_tests);
+    run_tla_trace.setCwd(b.path("."));
+    run_tla_trace.has_side_effects = true;
+    b.step("test-tla-trace", "Generate real RawNode conformance traces (run mise test-tla-trace to validate)").dependOn(&run_tla_trace.step);
+
     const test_specs = [_]TestSpec{
         .{ .name = "public-api", .source = "tests/public_api_test.zig" },
         .{ .name = "storage", .source = "tests/storage_test.zig" },

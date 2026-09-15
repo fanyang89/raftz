@@ -11,7 +11,11 @@ pub fn build(b: *std.Build) void {
     });
     const grpc_dependency = raft_build.grpcLiteDependency(raft_dependency, target, optimize);
     const grpc_module = grpc_dependency.module("grpc_lite");
-    const protobuf_module = grpc_module.import_table.get("protobuf").?;
+    const protobuf_dependency = grpc_dependency.builder.lazyDependency("protobuf", .{
+        .target = target,
+        .optimize = optimize,
+    }) orelse return;
+    const protobuf_module = protobuf_dependency.module("protobuf");
     const grpc_protobuf_module = b.createModule(.{
         .root_source_file = grpc_dependency.path("src/protobuf_adapter.zig"),
         .target = target,
@@ -26,7 +30,7 @@ pub fn build(b: *std.Build) void {
         .destination_directory = b.path(".zig-cache/generated"),
         .source_files = &.{b.path("proto/raft/sqlite/v1/database.proto")},
         .include_directories = &.{b.path("proto")},
-    });
+    }) orelse return;
     const generate_proto_step = b.step("gen-proto", "Generate Zig protobuf sources");
     generate_proto_step.dependOn(&generate_proto.step);
 

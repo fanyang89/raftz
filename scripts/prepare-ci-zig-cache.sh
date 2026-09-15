@@ -13,12 +13,14 @@ fetch_package() {
     local package_hash=$4
     local archive="$work_dir/$name.tar.gz"
 
+    printf 'Fetching Zig package %s\n' "$name"
     curl \
         --connect-timeout 20 \
         --fail \
         --location \
-        --max-time 300 \
+        --max-time 120 \
         --retry 5 \
+        --retry-max-time 180 \
         --retry-all-errors \
         --retry-delay 2 \
         --show-error \
@@ -26,7 +28,10 @@ fetch_package() {
         --output "$archive" \
         "$url"
     if [[ "$sha256" != - ]]; then
-        printf '%s  %s\n' "$sha256" "$archive" | sha256sum --check --status
+        if ! printf '%s  %s\n' "$sha256" "$archive" | sha256sum --check --status; then
+            printf 'unexpected archive SHA-256 for %s\n' "$name" >&2
+            return 1
+        fi
     fi
 
     local actual_hash
@@ -39,10 +44,10 @@ fetch_package() {
 }
 
 fetch_package \
-    grpc-lite-d45f929d \
-    https://codeload.github.com/fanyang89/grpc-lite/tar.gz/d45f929dd73f927fd515aa3b6e3188fd9b6714f0 \
+    grpc-lite-c0d2207b \
+    https://codeload.github.com/fanyang89/grpc-lite/tar.gz/c0d2207bdb426243327a0f4f41d3983ae4e53e30 \
     - \
-    grpc_lite-0.4.0-BcwY0NQW9AGVwOldiYN_ZlF3bGreQl8PArikDoSzDE2n
+    grpc_lite-0.4.0-BcwY0BKEFQCZukihgaM1osxJ0WrNVtc5nBTtjU3V9PKW
 
 fetch_package \
     crc32c-2bbb3be4 \

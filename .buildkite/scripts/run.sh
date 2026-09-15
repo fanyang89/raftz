@@ -7,6 +7,11 @@ if [[ $(uname -s) != Linux || $(uname -m) != "$expected_arch" ]]; then
     printf 'Expected Linux %s, got %s %s\n' "$expected_arch" "$(uname -s)" "$(uname -m)" >&2
     exit 1
 fi
+prefetch=true
+if [[ ${1:-} == --skip-prefetch ]]; then
+    prefetch=false
+    shift
+fi
 if [[ $# -eq 0 ]]; then
     printf 'A command is required\n' >&2
     exit 1
@@ -29,6 +34,7 @@ esac
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$root"
+bash .buildkite/scripts/install-deps.sh
 export CI=true MISE_YES=1
 export MISE_TRUSTED_CONFIG_PATHS="$root"
 # These paths live on the Buildkite cache volume when one is mounted; without a
@@ -48,4 +54,7 @@ printf '%s  %s\n' "$mise_sha256" "$work/mise.tar.gz" | sha256sum --check
 tar --extract --gzip --file "$work/mise.tar.gz" --directory "$work"
 export PATH="$work/mise/bin:$PATH"
 mise install
+if [[ $prefetch == true ]]; then
+    mise exec -- bash scripts/prepare-ci-zig-cache.sh
+fi
 mise exec -- "$@"

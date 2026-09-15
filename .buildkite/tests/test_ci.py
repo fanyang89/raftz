@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -13,12 +14,15 @@ ARTIFACTS = {
 }
 
 
-def load_pipeline(name):
+def load_pipeline(name, environment=None):
+    command = ["buildkite-agent", "pipeline", "upload", "--dry-run",
+               "--agent-access-token", "dry-run-only"]
+    if environment is None:
+        command.append("--no-interpolation")
+    command.append(str(ROOT / ".buildkite" / name))
     result = subprocess.run(
-        ["buildkite-agent", "pipeline", "upload", "--dry-run",
-         "--no-interpolation", "--agent-access-token", "dry-run-only",
-         str(ROOT / ".buildkite" / name)],
-        cwd=ROOT, text=True, capture_output=True, check=True,
+        command, cwd=ROOT, env={**os.environ, **(environment or {})},
+        text=True, capture_output=True, check=True,
     )
     return json.loads(result.stdout)
 
@@ -33,22 +37,68 @@ def jobs(pipeline):
             }
 
 
+class GitHubWorkflowTests(unittest.TestCase):
+    def test_core_matrix_is_amd64_only_and_still_required(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        core = re.search(r"(?ms)^  core-test:\n(.*?)(?=^  [\w-]+:|\Z)", workflow)
+        self.assertIsNotNone(core)
+        entries = re.findall(
+            r"(?m)^\s+- arch: (\S+)\n\s+optimize: (\S+)\n\s+runner: (\S+)",
+            core.group(1),
+        )
+        self.assertEqual(entries, [
+            ("x86_64", "Debug", "ubuntu-24.04"),
+            ("x86_64", "ReleaseSafe", "ubuntu-24.04"),
+        ])
+        self.assertNotRegex(workflow, r"aarch64|arm64|ubuntu-\S+-arm\b")
+        self.assertIn("      - core-test\n", workflow)
+        self.assertIn("fail-fast: false", core.group(1))
+
+
+    def test_build_jobs_prefetch_dependencies_before_tests(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        commands = {
+            "core-test": "zig build test",
+            "coverage": "mise run coverage",
+            "raft-sqlite-example": "mise run test-raft-sqlite",
+            "libelection-example": "mise run test-libelection",
+            "sanitizer": "mise run ${{ matrix.task }}",
+            "gperftools": "mise run test-gperftools",
+            "fuzz": "scripts/run-fuzz.sh",
+            "wal-durability": "mise run wal-durability",
+        }
+        for key, command in commands.items():
+            with self.subTest(job=key):
+                job = re.search(rf"(?ms)^  {key}:\n(.*?)(?=^  [\w-]+:|\Z)", workflow)
+                self.assertIsNotNone(job)
+                body = job.group(1)
+                self.assertLess(body.index("run: scripts/prepare-ci-zig-cache.sh"),
+                                body.index(f"run: {command}"))
+                self.assertNotIn("continue-on-error", body)
+
+
 class PipelineTests(unittest.TestCase):
+    def test_only_lint_skips_dependency_prefetch(self):
+        for name in ["pipeline.yml", "nightly.yml"]:
+            for job in jobs(load_pipeline(name)):
+                self.assertEqual("--skip-prefetch" in job["command"], job["key"] == "lint")
+
     def test_regular_workloads(self):
         pipeline = load_pipeline("pipeline.yml")
         expanded = list(jobs(pipeline))
-        self.assertEqual(len(expanded), 16)
+        self.assertEqual(len(expanded), 14)
         core = [job for job in expanded if job["key"].startswith("core-")]
-        self.assertEqual(len(core), 4)
-        for arch, queue in [("x86_64", "amd64"), ("aarch64", "arm64")]:
-            for mode in ["Debug", "ReleaseSafe"]:
-                command = (
-                    f"bash .buildkite/scripts/run.sh {arch} zig build test "
-                    f"-Doptimize={mode} --summary all"
-                )
-                match = [job for job in core if job["command"] == command]
-                self.assertEqual(len(match), 1)
-                self.assertEqual(match[0]["agents"]["queue"], f"raftz-linux-{queue}")
+        self.assertEqual(len(core), 2)
+        self.assertEqual({job["key"] for job in core}, {"core-amd64"})
+        for mode in ["Debug", "ReleaseSafe"]:
+            command = (
+                "bash .buildkite/scripts/in-container.sh "
+                "bash .buildkite/scripts/run.sh x86_64 zig build test "
+                f"-Doptimize={mode} --summary all"
+            )
+            match = [job for job in core if job["command"] == command]
+            self.assertEqual(len(match), 1)
+            self.assertEqual(match[0]["agents"]["queue"], "linux-medium")
         commands = "\n".join(job["command"] for job in expanded)
         self.assertIn("mise run ci-lint-all", commands)
         self.assertIn("mise run test-wal-crash", commands)
@@ -59,6 +109,14 @@ class PipelineTests(unittest.TestCase):
         for target in ["codec", "wal", "confchange"]:
             self.assertIn(f"fuzz-{target} 100K", commands)
         self.assertIn("fuzz-sim 10K", commands)
+
+    def test_runtime_jobs_use_hosted_containers(self):
+        container_keys = {"core-amd64", "coverage", "raft-sqlite", "libelection", "sanitizer", "gperftools"}
+        for name in ["pipeline.yml", "nightly.yml"]:
+            for job in jobs(load_pipeline(name)):
+                wrapped = job["command"].startswith("bash .buildkite/scripts/in-container.sh ")
+                self.assertEqual(wrapped, name == "pipeline.yml" and job["key"] in container_keys)
+                self.assertEqual(job["agents"]["queue"], "linux-medium")
 
     def test_composite_tasks(self):
         lint = (ROOT / ".mise/tasks/ci-lint-all").read_text()
@@ -95,12 +153,37 @@ class PipelineTests(unittest.TestCase):
             cache = load_pipeline(name)["cache"]
             self.assertIn(".zig-cache", cache["paths"])
             self.assertIn("/tmp/raftz-ci-cache", cache["paths"])
-            self.assertIn("${BUILDKITE_BRANCH}", cache["name"])
-        pipeline = load_pipeline("pipeline.yml")
-        arm = [s for s in pipeline["steps"] if s["key"] == "core-arm64"]
-        self.assertEqual(len(arm), 1)
-        self.assertEqual(arm[0]["cache"]["paths"], pipeline["cache"]["paths"])
-        self.assertIn("arm64", arm[0]["cache"]["name"])
+            self.assertIn("${BUILDKITE_COMMIT}", cache["name"])
+            self.assertNotIn("${BUILDKITE_BRANCH}", cache["name"])
+
+    def test_cache_names_are_valid_after_interpolation(self):
+        commit = "a" * 40
+        for branch in ["formal/etcd-tla-baseline", "ci/cache_zig", "feature.v2"]:
+            for name in ["pipeline.yml", "nightly.yml"]:
+                with self.subTest(branch=branch, pipeline=name):
+                    pipeline = load_pipeline(name, {
+                        "BUILDKITE_BRANCH": branch, "BUILDKITE_COMMIT": commit,
+                    })
+                    caches = [pipeline["cache"], *[
+                        step["cache"] for step in pipeline["steps"] if "cache" in step
+                    ]]
+                    for cache in caches:
+                        self.assertRegex(cache["name"], r"^[A-Za-z0-9-]+$")
+                        self.assertIn(commit, cache["name"])
+
+    def test_cache_names_separate_commits_and_nightly(self):
+        names_by_commit = []
+        for commit in ["a" * 40, "b" * 40]:
+            environment = {"BUILDKITE_BRANCH": "formal/etcd-tla-baseline",
+                           "BUILDKITE_COMMIT": commit}
+            regular = load_pipeline("pipeline.yml", environment)
+            nightly = load_pipeline("nightly.yml", environment)
+            names = [regular["cache"]["name"], nightly["cache"]["name"]]
+            names.extend(step["cache"]["name"] for step in regular["steps"] if "cache" in step)
+            self.assertEqual(len(names), 2)
+            self.assertEqual(len(set(names)), 2)
+            names_by_commit.append(set(names))
+        self.assertTrue(names_by_commit[0].isdisjoint(names_by_commit[1]))
 
     def test_failure_and_artifact_contract(self):
         for name in ["pipeline.yml", "nightly.yml"]:
@@ -119,9 +202,8 @@ class PipelineTests(unittest.TestCase):
                     self.assertIn("with-fuzz-artifacts.sh", job["command"])
                 if job["key"] == "coverage":
                     self.assertIn("zig-out/coverage/**/*", job["artifact_paths"])
-                if job["key"] != "core-arm64":
-                    self.assertEqual(job["agents"]["queue"], "raftz-linux-amd64")
-                    self.assertIn("run.sh x86_64 ", job["command"])
+                self.assertEqual(job["agents"]["queue"], "linux-medium")
+                self.assertIn("run.sh x86_64 ", job["command"])
 
 
 class BootstrapTests(unittest.TestCase):
@@ -143,6 +225,8 @@ class BootstrapTests(unittest.TestCase):
             "SHA_STATUS": "0",
             "INSTALL_STATUS": "0",
         }
+        for tool in ["cc", "c++", "make", "cmake", "ninja", "pkg-config"]:
+            self.stub(tool, "exit 0")
         self.stub("uname", 'if [[ $1 == -s ]]; then echo "$FAKE_OS"; else echo "$FAKE_ARCH"; fi')
         self.stub("curl", 'printf "curl %s\\n" "$*" >> "$CALL_LOG"')
         self.stub("sha256sum", 'cat >/dev/null; exit "$SHA_STATUS"')
@@ -160,6 +244,9 @@ printf 'mise %s\\n' "$*" >> "$CALL_LOG"
 if [[ $1 == install ]]; then exit "$INSTALL_STATUS"; fi
 [[ $1 == exec && $2 == -- ]]
 shift 2
+if [[ $1 == bash && ${2:-} == scripts/prepare-ci-zig-cache.sh ]]; then
+    exit "${PREFETCH_STATUS:-0}"
+fi
 "$@"
 ''')
 
@@ -196,6 +283,27 @@ shift 2
         self.env["INSTALL_STATUS"] = "19"
         self.assertEqual(self.run_command().returncode, 19)
         self.assertNotIn("mise exec", self.log.read_text())
+
+    def test_prefetch_runs_before_command(self):
+        result = self.run_command()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.log.read_text().splitlines()
+        prefetch = calls.index("mise exec -- bash scripts/prepare-ci-zig-cache.sh")
+        self.assertLess(calls.index("mise install"), prefetch)
+        self.assertLess(prefetch, calls.index("mise exec -- bash -c exit 0"))
+
+    def test_prefetch_failure_stops_command(self):
+        self.env["PREFETCH_STATUS"] = "29"
+        result = self.run_command()
+        self.assertEqual(result.returncode, 29, result.stderr)
+        self.assertNotIn("mise exec -- bash -c exit 0", self.log.read_text())
+        self.assertEqual(list((self.base / "tmp/pi").iterdir()), [])
+
+    def test_lint_can_skip_prefetch(self):
+        self.env["PREFETCH_STATUS"] = "29"
+        result = self.run_command(command=["--skip-prefetch", "bash", "-c", "exit 0"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("prepare-ci-zig-cache.sh", self.log.read_text())
 
     def test_preserves_exit_status_and_cleans_temporary_files(self):
         result = self.run_command(command=["bash", "-c", "exit 23"])

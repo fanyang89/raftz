@@ -62,7 +62,9 @@ mise run test-tsan
 mise run test-ubsan
 ```
 
-CI runs Debug and ReleaseSafe on Linux x86_64 and arm64. TSan and C undefined
+CI runs Debug and ReleaseSafe on Linux x86_64. Linux ARM64 coverage is paused.
+Buildkite macOS ARM64 coverage is planned but not enabled; it is not equivalent
+to Linux ARM64 validation. TSan and C undefined
 behavior detection run as separate Linux jobs.
 
 Fast Raft invariant checks are enabled by default in Debug and ReleaseSafe.
@@ -105,6 +107,19 @@ mise run fuzz-sim
 The focused tasks use `scripts/run-fuzz.sh` from a source checkout to run bounded
 iterations. A Zig fuzz reproducer written to `.zig-cache/f/crash` causes a
 non-zero exit so CI cannot silently accept a discovered crash.
+
+## TLA+ Baseline
+
+```bash
+mise run prepare-tla
+mise run test-tla
+```
+
+These independent tasks check the pinned upstream etcd TLA+ model: a one-node
+bounded exhaustive check and a three-node sampled simulation. They do not run in
+`mise run check` and do not validate Zig execution traces or constitute a TLAPS
+proof. See [formal verification](formal-verification.md) for implementation
+alignment and [the baseline guide](../formal/README.md) for bounds and results.
 
 ## Upstream Behavioral Inventory
 

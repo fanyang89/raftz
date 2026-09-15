@@ -1,19 +1,30 @@
 # Buildkite CI
 
-Buildkite runs alongside GitHub Actions during the migration. The workflows in
-`.github/workflows/` and the existing GitHub required checks remain unchanged.
-Creating these files does not create queues, pipelines, schedules, or GitHub
-integration settings in Buildkite.
+Buildkite runs alongside GitHub Actions during the migration. GitHub's AMD64
+jobs, nightly fuzzing, coverage upload, and `Required` aggregation remain enabled
+until cutover validation is complete. Repository files do not create queues,
+pipelines, schedules, or GitHub integration settings in Buildkite.
+
+Both CI systems currently run Linux AMD64 only. Buildkite uses the existing
+`linux-medium` queue. Linux ARM64 Debug and ReleaseSafe jobs have been removed
+from GitHub Actions by owner decision; ARM64 coverage is temporarily paused.
+
+Future ARM64 coverage is planned on Buildkite macOS hosted agents. It is not yet
+enabled and is not equivalent to Linux ARM64 validation. The current bootstrap
+rejects non-Linux hosts, and the default filesystem, Raftor loop, and grpc-lite
+transport depend on Linux support. A macOS job needs its own bootstrap and
+validated platform support or an explicitly documented test subset; changing
+only the queue name is insufficient.
 
 ## Pipelines
 
 | File | Workloads | Expanded jobs |
 | --- | --- | --- |
-| `.buildkite/pipeline.yml` | Lint, dual-architecture core tests, coverage, both examples, sanitizers, gperftools, bounded fuzzing, WAL durability | 16 |
+| `.buildkite/pipeline.yml` | Lint, AMD64 core tests, coverage, both examples, sanitizers, gperftools, bounded fuzzing, WAL durability | 14 |
 | `.buildkite/nightly.yml` | Codec/WAL/confchange at 1M runs, simulation at 100K, WAL crash at 10K | 5 |
 
-The regular pipeline preserves the existing test commands, optimization modes,
-fuzz budgets, and job timeouts. It uses the overall Buildkite pipeline status
+The regular pipeline preserves the remaining Linux AMD64 test commands,
+optimization modes, fuzz budgets, and job timeouts. It uses the overall Buildkite pipeline status
 instead of a separate GitHub Actions `Required` aggregation job. No test is
 soft-failed, and a failing test does not cancel its siblings.
 `.buildkite/scripts/with-fuzz-artifacts.sh` uploads fuzz reproducers only when
@@ -24,33 +35,57 @@ on the hosted agents before cutover.
 
 ## Hosted queues
 
-Create two Linux hosted queues in the same Buildkite cluster:
+Both pipelines use this existing hosted queue in the pipeline's cluster:
 
-| Queue key | Architecture | Suggested starting shape |
+| Queue key | OS / architecture | Shape |
 | --- | --- | --- |
-| `raftz-linux-amd64` | AMD64 | `LINUX_AMD64_4X16` |
-| `raftz-linux-arm64` | ARM64 | `LINUX_ARM64_4X16` |
+| `linux-medium` | Linux AMD64 | 4 vCPU / 16 GB RAM |
 
-These names are referenced by the YAML files and initial upload steps below.
-If using different names, update both pipeline files and their configuration
-tests. Restrict pipeline access to these queues and set concurrency/budget limits
+This name is referenced by the YAML files and initial upload steps below.
+If using a different name, update both pipeline files and their configuration
+tests. Restrict pipeline access to this queue and set concurrency/budget limits
 before enabling all jobs. Each job should get an isolated hosted environment;
 do not share a writable checkout between concurrent jobs.
 
-The image needs Bash, Git, curl, CA certificates, tar, sha256sum, Python 3, and
-`buildkite-agent` on PATH. Coverage additionally requires apt-get and either root
-or passwordless `sudo -n` for installing build dependencies. It compiles the same
-pinned, SHA-256-verified kcov source as GitHub Actions, installs it into a unique
-temporary directory, and checks that the Cobertura report is nonempty. kcov must
-be permitted to trace child processes; verify ptrace/seccomp restrictions on the
-actual hosted image. TSan must also be validated against its kernel/security
-configuration.
+The agent image needs Bash, Git, curl, CA certificates, tar, sha256sum, Python 3,
+`buildkite-agent`, and a working Linux AMD64 Docker daemon/client. The bootstrap checks for C/C++ compilers, Make, CMake,
+Ninja, and pkg-config before downloading mise. If any are missing, it installs
+`build-essential`, `cmake`, `ninja-build`, and `pkg-config` with apt-get, requiring
+root or passwordless `sudo -n`. Installation errors stop the job before building;
+images that already supply all these tools do not require package installation.
+The native grpc-lite dependencies need these tools even when Zig is installed.
 
-Buildkite currently documents its default Linux image as Ubuntu 22.04, whereas
-the GitHub jobs use Ubuntu 24.04. The pipeline does not assume these are identical.
-Record the selected image and run the acceptance checks below; use a custom
-Ubuntu 24.04 hosted image if matching the existing OS is necessary. Do not
-silently disable sanitizer or coverage failures to accommodate an image.
+The eight expanded runtime jobs (Core, Coverage, both examples, sanitizers, and
+gperftools) use `in-container.sh` to build and run an Ubuntu 24.04 test container
+**inside the existing Buildkite hosted job**. There is no self-hosted agent,
+external VM, new queue, or service installation. The Linux AMD64 Ubuntu base is
+pinned by its upstream registry digest in `.buildkite/container/Dockerfile`.
+The image includes native build tools and UTC timezone data; the default hosted
+image's missing `/etc/localtime` otherwise breaks the logger tests. Lint, fuzz,
+and WAL durability jobs retain their direct hosted execution and artifact wrapper.
+
+The container uses a hash-verified, pinned Moby default seccomp profile with only
+two additional rules: `personality(ADDR_NO_RANDOMIZE)` for the native AMD64
+personality, and the three io_uring syscalls. All upstream restrictions remain;
+there is no `--privileged`, `seccomp=unconfined`, extra Linux capability, host ASLR
+change, or Docker socket mount. Only the checkout and CI cache are bind-mounted;
+agent credentials are not forwarded. The memlock limit is 64 MiB. See the
+[upstream profile provenance](../.buildkite/container/moby/README.md).
+
+Before downloading mise or compiling tests, a native probe checks `/etc/localtime`,
+setting and restoring the process personality, opening an io_uring instance, and
+tracing a child process. Any failed probe, container build, or test fails the job.
+Container permissions cannot override a hosted kernel restriction: if the probe
+still fails, retain its exact error and consult Buildkite rather than disabling
+checks or falling back to a different execution environment. The full hosted tests,
+not this small probe alone, establish whether the environment is compatible.
+
+Coverage installs its development libraries inside this container and compiles
+the same pinned, SHA-256-verified kcov source as GitHub Actions. It installs kcov
+into a unique temporary directory and checks that the Cobertura report is
+nonempty. Reports remain in the mounted checkout for the hosted agent to upload.
+The container is removed on completion; ordinary wrapper exits also attempt
+cleanup. Forced host loss relies on Buildkite destroying the job environment.
 
 `.buildkite/scripts/run.sh` checks the actual OS/architecture before downloading
 anything. It downloads mise 2026.9.1 with architecture-specific hashes taken from
@@ -59,6 +94,23 @@ the upstream `SHASUMS256.txt`, installs the tools in `mise.toml`, and uses
 Downloads require access to GitHub releases/codeload and the configured tool
 registries. Temporary directories respect an existing `TMPDIR`, otherwise use
 `$HOME/tmp`.
+
+## Dependency preparation
+
+Before build or test commands, `run.sh` runs `scripts/prepare-ci-zig-cache.sh`
+through mise. The script downloads pinned archives with bounded curl retries
+and request timeouts, verifies every Zig package hash (and archive SHA-256 where
+recorded), then resolves remaining dependencies with `--fetch=needed`.
+A persistent download, integrity, or resolution failure stops the job before
+its command starts. Retries are confined to dependency preparation; test
+commands run once and retain their failure status. This handles transient GitHub release-asset 504s
+without changing package versions or using unchecked mirrors.
+
+The lint step alone passes `--skip-prefetch` after the architecture argument
+because it does not build dependencies. Regular GitHub build/test jobs use the
+same prefetch script; GitHub nightly retains its existing package-cache setup.
+Buildkite's prefetch and subsequent command share `ZIG_GLOBAL_CACHE_DIR`,
+including commands that enter an example directory.
 
 ## Caching
 
@@ -69,14 +121,19 @@ actionlint, zigcli), Zig package fetches (for example the pinned gperftools
 fork), and the local build cache survive across jobs. Without a mounted volume
 these are ordinary temporary directories and builds simply run cold.
 
-Volume names interpolate `${BUILDKITE_BRANCH}`, so each branch gets its own
-volume and one branch's jobs cannot read or replace another branch's cache.
-The ARM64 core steps use an `-arm64-` volume because `MISE_DATA_DIR` contains
-architecture-specific binaries; the Zig caches are content-addressed and would
-be safe to share. A fork PR built from a branch whose name matches a trusted
-branch (for example `main`) shares that branch's volume, so fork PR builds
-must stay approval-gated as described below. Volumes are best-effort and can
-be evicted; every job must still pass on a cold cache.
+Volume names use the resolved `${BUILDKITE_COMMIT}` SHA rather than the branch
+name. Buildkite permits only letters, numbers, and hyphens in cache names;
+branches such as `formal/etcd-tla-baseline` would otherwise fail server-side
+pipeline upload even though the agent's local dry run succeeds. Tests check
+interpolated names as well as native YAML parsing.
+
+Jobs and retries for the same commit can reuse these volumes, including across
+branches at that commit. New commits start with a separate cache; this deliberately
+trades cross-commit reuse for simple, collision-free source-revision keys.
+Nightly uses a separate `-nightly-` volume. Future macOS ARM64 jobs need separate
+caches because `MISE_DATA_DIR` contains OS- and architecture-specific binaries.
+Cache names are not an authorization boundary; fork builds remain approval-gated.
+Volumes are best-effort and can be evicted; every job must pass on a cold cache.
 
 ## Connect the regular pipeline
 
@@ -91,7 +148,7 @@ be evicted; every job must still pass on a cold cache.
    steps:
      - label: "Upload CI pipeline"
        agents:
-         queue: raftz-linux-amd64
+         queue: linux-medium
        command: buildkite-agent pipeline upload .buildkite/pipeline.yml
        timeout_in_minutes: 5
    ```
@@ -124,9 +181,9 @@ Third-party fork PR builds require a separate provider setting. Enable them only
 after configuring an appropriate approval/isolation policy. They execute
 untrusted repository code, including mise configuration and pipeline changes.
 Restrict queue/cluster access, do not attach deployment/cloud secrets, and do
-not provide a Codecov token. Cache volumes are branch-scoped, but a fork branch
-named like a trusted branch shares that branch's volume; keep fork builds
-approval-gated so untrusted code cannot poison a trusted cache. A repository
+not provide a Codecov token. Cache volumes are commit-scoped, not trust-scoped;
+keep fork builds approval-gated so untrusted execution cannot poison a trusted
+cache. A repository
 shell script is not a security boundary against a malicious PR.
 
 ## Connect nightly fuzzing
@@ -137,7 +194,7 @@ Create a second pipeline, for example `raftz-nightly`, with this initial step:
 steps:
   - label: "Upload nightly pipeline"
     agents:
-      queue: raftz-linux-amd64
+      queue: linux-medium
     command: buildkite-agent pipeline upload .buildkite/nightly.yml
     timeout_in_minutes: 5
 ```
@@ -179,8 +236,11 @@ They are not a substitute for server-side pipeline acceptance or hosted runs.
 
 Before changing required checks or removing any GitHub workflow:
 
-- Run all 16 regular jobs and all 5 nightly jobs on the hosted queues. Confirm
-  that the ARM jobs really report `aarch64` and TSan runs on `x86_64`.
+- Run all 14 regular jobs and all 5 nightly jobs on `linux-medium`; confirm
+  their actual OS/architecture is Linux `x86_64`.
+- Record the owner-approved pause of Linux ARM64 coverage. Do not describe
+  AMD64-only CI as dual-architecture validation. The future macOS ARM64 work is
+  separate from the AMD64 cutover and does not restore Linux ARM64 coverage.
 - Validate main push, PR open/update, manual builds, the UTC schedule, and rapid
   successive pushes/cancellation. Verify fork policy separately.
 - Resolve PR merge-commit parity and the OS/kernel differences described above.

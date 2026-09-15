@@ -46,12 +46,6 @@ jobs:
           - arch: x86_64
             optimize: ReleaseSafe
             runner: ubuntu-24.04
-          - arch: aarch64
-            optimize: Debug
-            runner: ubuntu-24.04-arm
-          - arch: aarch64
-            optimize: ReleaseSafe
-            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
@@ -62,6 +56,9 @@ jobs:
 
       - name: Install mise tools
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+
+      - name: Fetch verified Zig dependencies
+        run: scripts/prepare-ci-zig-cache.sh
 
       - name: Test
         run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
@@ -104,6 +101,9 @@ jobs:
           cmake --build /tmp/kcov-build
           sudo cmake --install /tmp/kcov-build
 
+      - name: Fetch verified Zig dependencies
+        run: scripts/prepare-ci-zig-cache.sh
+
       - name: Generate coverage
         run: mise run coverage
 
@@ -128,6 +128,9 @@ jobs:
       - name: Install mise tools
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
 
+      - name: Fetch verified Zig dependencies
+        run: scripts/prepare-ci-zig-cache.sh
+
       - name: Test example
         run: mise run test-raft-sqlite
 
@@ -143,6 +146,9 @@ jobs:
 
       - name: Install mise tools
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+
+      - name: Fetch verified Zig dependencies
+        run: scripts/prepare-ci-zig-cache.sh
 
       - name: Test example
         run: mise run test-libelection
@@ -168,6 +174,9 @@ jobs:
       - name: Install mise tools
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
 
+      - name: Fetch verified Zig dependencies
+        run: scripts/prepare-ci-zig-cache.sh
+
       - name: Run sanitizer tests
         run: mise run ${{ matrix.task }}
 
@@ -183,6 +192,9 @@ jobs:
 
       - name: Install mise tools
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+
+      - name: Fetch verified Zig dependencies
+        run: scripts/prepare-ci-zig-cache.sh
 
       - name: Run gperftools tests
         run: mise run test-gperftools
@@ -211,6 +223,9 @@ jobs:
 
       - name: Install mise tools
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+
+      - name: Fetch verified Zig dependencies
+        run: scripts/prepare-ci-zig-cache.sh
 
       - name: Run bounded fuzzing
         run: scripts/run-fuzz.sh fuzz-${{ matrix.target }} ${{ matrix.runs }}
@@ -242,6 +257,9 @@ jobs:
 
       - name: Install mise tools
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+
+      - name: Fetch verified Zig dependencies
+        run: scripts/prepare-ci-zig-cache.sh
 
       - name: Test WAL durability
         run: mise run wal-durability

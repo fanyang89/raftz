@@ -1,63 +1,50 @@
 agents:
-  queue: raftz-linux-amd64
+  queue: linux-medium
 
 cache:
   paths:
     - ".zig-cache"
     - "/tmp/raftz-ci-cache"
-  name: "${BUILDKITE_BRANCH}-cache"
+  name: "raftz-${BUILDKITE_COMMIT}-cache"
 
 steps:
   - label: "Lint"
     key: lint
-    command: bash .buildkite/scripts/run.sh x86_64 mise run ci-lint-all
+    command: bash .buildkite/scripts/run.sh x86_64 --skip-prefetch mise run ci-lint-all
     timeout_in_minutes: 10
 
   - label: "Core (x86_64, {{matrix}})"
     key: core-amd64
-    command: bash .buildkite/scripts/run.sh x86_64 zig build test -Doptimize={{matrix}} --summary all
-    matrix: [Debug, ReleaseSafe]
-    timeout_in_minutes: 30
-
-  - label: "Core (aarch64, {{matrix}})"
-    key: core-arm64
-    agents:
-      queue: raftz-linux-arm64
-    cache:
-      paths:
-        - ".zig-cache"
-        - "/tmp/raftz-ci-cache"
-      name: "${BUILDKITE_BRANCH}-arm64-cache"
-    command: bash .buildkite/scripts/run.sh aarch64 zig build test -Doptimize={{matrix}} --summary all
+    command: bash .buildkite/scripts/in-container.sh bash .buildkite/scripts/run.sh x86_64 zig build test -Doptimize={{matrix}} --summary all
     matrix: [Debug, ReleaseSafe]
     timeout_in_minutes: 30
 
   - label: "Coverage"
     key: coverage
-    command: bash .buildkite/scripts/run.sh x86_64 bash .buildkite/scripts/coverage.sh
+    command: bash .buildkite/scripts/in-container.sh bash .buildkite/scripts/run.sh x86_64 bash .buildkite/scripts/coverage.sh
     timeout_in_minutes: 60
     artifact_paths:
       - zig-out/coverage/**/*
 
   - label: "raft-sqlite example"
     key: raft-sqlite
-    command: bash .buildkite/scripts/run.sh x86_64 mise run test-raft-sqlite
+    command: bash .buildkite/scripts/in-container.sh bash .buildkite/scripts/run.sh x86_64 mise run test-raft-sqlite
     timeout_in_minutes: 30
 
   - label: "libelection C SDK example"
     key: libelection
-    command: bash .buildkite/scripts/run.sh x86_64 mise run test-libelection
+    command: bash .buildkite/scripts/in-container.sh bash .buildkite/scripts/run.sh x86_64 mise run test-libelection
     timeout_in_minutes: 30
 
   - label: "Sanitizer ({{matrix}})"
     key: sanitizer
-    command: bash .buildkite/scripts/run.sh x86_64 mise run test-{{matrix}}
+    command: bash .buildkite/scripts/in-container.sh bash .buildkite/scripts/run.sh x86_64 mise run test-{{matrix}}
     matrix: [tsan, ubsan]
     timeout_in_minutes: 60
 
   - label: "Gperftools"
     key: gperftools
-    command: bash .buildkite/scripts/run.sh x86_64 mise run test-gperftools
+    command: bash .buildkite/scripts/in-container.sh bash .buildkite/scripts/run.sh x86_64 mise run test-gperftools
     timeout_in_minutes: 30
 
   - label: "Fuzz ({{matrix}})"

@@ -112,7 +112,9 @@ for the processing order and ownership contracts.
 
 | Capability | Status |
 | --- | --- |
-| Linux x86_64 and arm64 | Continuously tested in Debug and ReleaseSafe |
+| Linux x86_64 | Continuously tested in Debug and ReleaseSafe |
+| Linux arm64 | Automated coverage paused |
+| macOS arm64 | Planned Buildkite coverage; not enabled |
 | Core Raft, ReadIndex, learners, joint consensus | Supported |
 | MemoryStorage, WAL, snapshots, restart | Supported |
 | Multi-Raft quotas, scheduling, durable migration, and metrics | Supported MVP |

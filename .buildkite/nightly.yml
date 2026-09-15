@@ -1,11 +1,11 @@
 agents:
-  queue: raftz-linux-amd64
+  queue: linux-medium
 
 cache:
   paths:
     - ".zig-cache"
     - "/tmp/raftz-ci-cache"
-  name: "${BUILDKITE_BRANCH}-nightly-cache"
+  name: "raftz-${BUILDKITE_COMMIT}-nightly-cache"
 
 steps:
   - label: "Nightly fuzz ({{matrix}})"
