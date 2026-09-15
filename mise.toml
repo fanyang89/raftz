@@ -32,3 +32,15 @@ run = [
   "bash tools/fetch_vip_manager.sh zig-out/vip-manager",
   "sudo -n bash demo/three_node_vip_demo.sh zig-out/bin/election-vip-bridge zig-out/bin/election-vip-fencer zig-out/vip-manager/vip-manager",
 ]
+
+[tasks.test-jepsen-unit]
+description = "Opt-in Jepsen adapter/checker unit tests in Docker"
+run = "bash tests/jepsen/run.sh unit"
+
+[tasks.test-jepsen-smoke]
+description = "Bounded three-node Jepsen baseline, partition, and kill/restart smoke"
+run = "bash tests/jepsen/run.sh smoke"
+
+[tasks.test-jepsen-full]
+description = "Longer opt-in three-node Jepsen register tests (120 seconds per scenario)"
+run = "bash tests/jepsen/run.sh full"

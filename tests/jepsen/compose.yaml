@@ -1,0 +1,39 @@
+x-node: &node
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.node
+  init: true
+  cap_add: [NET_ADMIN]
+  networks: [test]
+  healthcheck:
+    test: [CMD-SHELL, 'test -f /run/sshd.pid && kill -0 $$(cat /run/sshd.pid)']
+    interval: 1s
+    timeout: 2s
+    retries: 30
+services:
+  n1:
+    <<: *node
+    environment: {NODE_ID: '1'}
+    volumes: [data1:/data]
+  n2:
+    <<: *node
+    environment: {NODE_ID: '2'}
+    volumes: [data2:/data]
+  n3:
+    <<: *node
+    environment: {NODE_ID: '3'}
+    volumes: [data3:/data]
+  controller:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.controller
+    command: ${RAFTZ_JEPSEN_COMMAND:-run none 20}
+    volumes: [results:/suite/store]
+    networks: [test]
+networks:
+  test: {}
+volumes:
+  data1: {}
+  data2: {}
+  data3: {}
+  results: {}
