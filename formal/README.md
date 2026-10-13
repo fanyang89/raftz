@@ -6,6 +6,9 @@ This directory imports a pinned, unmodified etcd Raft specification and provides
 reproducible baseline checks plus a [real RawNode trace conformance slice](trace.md).
 Two deterministic three-voter Zig executions now pass complete TLC trace checks,
 including elections, commits, leader change/conflict repair and atomic restart.
+A separate [Safe ReadIndex design model](read-index.md) checks prefix freshness
+and the apply barrier under explicit consensus assumptions; it is not Zig trace
+conformance or a complete linearizability proof.
 This does **not** prove correctness for all raftz executions. No TLAPS proof is
 included. A `THEOREM` declaration in an upstream module is not a checked proof.
 
@@ -23,7 +26,7 @@ selection, abstraction gaps, and staged acceptance criteria.
   CC-BY-4.0 attribution to Diego Ongaro, Brandon Amos, Huanchen Zhang, Daniel
   Ricketts, George Pîrlea, and Darius Foo. Preserve both notices and the embedded
   <https://creativecommons.org/licenses/by/4.0/> link when redistributing.
-- The two local `.cfg` files are modified derivatives of upstream
+- `SingleNode.cfg` and `ThreeNode.cfg` are modified derivatives of upstream
   `MCetcdraft.cfg`; their modification notices identify the local restrictions.
 
 The upstream trace modules are preserved unchanged as a reference. The local
@@ -41,6 +44,7 @@ No Python packages or global Java tools are installed.
 mise run prepare-tla
 mise run test-tla
 mise run test-tla-trace  # Real Zig executions and conformance, distinct from test-tla
+mise run test-tla-read-index  # Separate bounded ReadIndex design and negative checks
 
 # Equivalent commands without mise:
 python3 formal/check.py prepare
@@ -56,9 +60,18 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s formal -p 'test_*.py'
 
 `prepare` downloads about 10 MB from the official upstream release endpoints.
 `tools.lock.json` pins URLs and SHA-256 digests published by the upstream GitHub
-release API. Cached tools are rechecked before execution. There are no automatic
+release API or release asset listing. Cached tools are rechecked before execution. There are no automatic
 upgrades or floating `latest` downloads. Update the lock only after revalidating
 the profiles. A digest mismatch fails rather than trusting a replacement asset.
+
+On 2026-10-13, preparation correctly rejected the replaced `v1.8.0` TLC asset:
+the previous digest was `db131ddb48e7004d823bef4493df7b35694babe37505b9d9fa5685e7a331f1f1`.
+The [official asset listing](https://github.com/tlaplus/tlaplus/releases/expanded_assets/v1.8.0)
+published `c0d2f72abc30e92871bb16c56f6878612eccd936bf7ca5fa7e4e324200a0a5c4`,
+matching the newly downloaded jar. The lock was explicitly refreshed, without
+changing the CommunityModules pin or any imported specification. Baseline,
+real trace checks and their negative fixtures were rerun successfully. A release
+tag alone does not make its downloadable assets immutable.
 
 Tools and per-run artifacts live under `.cache/tla/`. Each run preserves the
 module/config copies, command line, TLC log, and state directory. The runner uses
@@ -106,6 +119,7 @@ Initial validation with the pinned tools and OpenJDK 25:
 | Three-node simulation | 100 traces / 10,769 states, no errors |
 | Three-node exhaustive check | Not completed as part of baseline validation |
 | Zig trace conformance | Two real executions pass; 9 semantic and 5 structural negatives rejected; see [trace results](trace.md) |
+| Safe ReadIndex design | Separate conditional model; 834,433 distinct three-voter states; see [bounds and negatives](read-index.md) |
 | TLAPS proof | Not implemented |
 
 These are baseline model results only. Neither bounded exploration nor sampled

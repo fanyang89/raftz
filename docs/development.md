@@ -44,6 +44,7 @@ mise run test-libelection
 mise run test-upstream
 mise run vopr-smoke
 mise run wal-durability
+mise run test-tla-read-index
 ```
 
 See [Testing](testing.md) for suite boundaries, per-upstream tasks, fault

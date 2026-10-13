@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Check Safe ReadIndex design, guard-removal counterexamples, and reachability witnesses"
+set -euo pipefail
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$root"
+PYTHONDONTWRITEBYTECODE=1 python3 formal/read_index_check.py "$@"
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s formal -p 'test_*.py'
