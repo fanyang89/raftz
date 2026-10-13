@@ -14,7 +14,7 @@ def observation(kind, seq, node=0, value=""):
     result = event(kind, seq, node)
     if value:
         result["value"] = value
-    state = dict(waiting=[], pending=[], ready=[], tracked=[], applied=0, completed=[])
+    state = dict(waiting=[], pending=[], ready=[], tracked=[], applied=0, completed=[], value="", writes=[])
     result["reads"] = [copy.deepcopy(state) for _ in range(3)]
     return result
 
@@ -59,7 +59,7 @@ class ReadTraceTests(unittest.TestCase):
         self.assertEqual(events[3]["pending"][0]["context"], "read-1")
 
     def test_semantic_read_corruption_reaches_model(self):
-        self.events[3]["reads"][0]["completed"] = [dict(context="read-1", index=0)]
+        self.events[3]["reads"][0]["completed"] = [dict(context="read-1", index=0, value="")]
         trace.write_events(self.path, self.events)
         events = trace.load(self.path)
         self.assertEqual(len(trace.instructions(events)[3]["reads"][0]["completed"]), 1)
@@ -112,14 +112,14 @@ class ReadTraceTests(unittest.TestCase):
             trace.load(self.path)
 
     def test_duplicate_json_key(self):
-        self.path.write_text(self.path.read_text().replace('"version": 2', '"version": 2, "version": 2'))
+        self.path.write_text(self.path.read_text().replace('"version": 3', '"version": 3, "version": 3'))
         with self.assertRaises(ValueError):
             trace.load(self.path)
 
     def test_invalid_apply_target(self):
         self.rejects(lambda rows: rows[5].update(kind="apply", value="01"))
 
-    def run_mock(self, code=0, output="", timeout=False):
+    def run_mock(self, code=0, output="", timeout=False, history_ok=True):
         def run(command, **kwargs):
             kwargs["stdout"].write(output)
             if timeout:
@@ -129,9 +129,11 @@ class ReadTraceTests(unittest.TestCase):
         with mock.patch.object(trace.check, "CACHE", Path(self.temp.name)), \
                 mock.patch.object(trace.check, "classpath", return_value="tools.jar"), \
                 mock.patch.object(trace.core, "validate", return_value=Path("checked-consensus")) as consensus, \
-                mock.patch.object(trace.subprocess, "run", side_effect=run):
+                mock.patch.object(trace.subprocess, "run", side_effect=run), \
+                mock.patch.object(trace.history_check, "check", return_value=(history_ok, Path("checked-history"))) as history:
             result = trace.validate(self.path, 1)
             consensus.assert_called_once()
+            history.assert_called_once()
             return result
 
     def test_timeout_is_not_negative_evidence(self):
@@ -154,6 +156,18 @@ class ReadTraceTests(unittest.TestCase):
         self.run_mock(output='<<"RAFTZ_TRACE_COMPLETE", 6>>\n'
                       'Model checking completed. No error has been found.\n'
                       '8 states generated, 7 distinct states found, 0 states left on queue.\n')
+
+    def test_non_linearizable_history_cannot_be_bypassed(self):
+        with self.assertRaisesRegex(trace.core.ConformanceError, "not linearizable"):
+            self.run_mock(history_ok=False, output='<<"RAFTZ_TRACE_COMPLETE", 6>>\n'
+                          'Model checking completed. No error has been found.\n'
+                          '8 states generated, 7 distinct states found, 0 states left on queue.\n')
+
+    def test_unknown_application_is_rejected(self):
+        self.rejects(lambda rows: rows[0].update(application="other"))
+
+    def test_missing_return_value_is_rejected(self):
+        self.rejects(lambda rows: rows[5]["reads"][0]["completed"].append(dict(context="read-1", index=0)))
 
     def test_consensus_failure_cannot_be_bypassed(self):
         with mock.patch.object(trace.check, "CACHE", Path(self.temp.name)), \

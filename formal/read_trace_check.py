@@ -11,9 +11,10 @@ import sys
 import tempfile
 
 import check
+import history_check
 import trace_check as core
 
-HEADER = dict(core.HEADER, version=2, read_index=True)
+HEADER = dict(core.HEADER, version=3, read_index=True, application="register-v1")
 READ_EVENTS = {"read", "read_ready", "apply", "complete_reads"}
 
 
@@ -29,13 +30,19 @@ def bounded_list(value):
 
 
 def read_state(state):
-    core.fields(state, "waiting pending ready tracked applied completed")
+    core.fields(state, "waiting pending ready tracked applied completed value writes")
     core.natural(state["applied"], 32)
     out = dict(waiting=[context(c) for c in bounded_list(state["waiting"])],
-               pending=[], ready=[], tracked=[], applied=state["applied"], completed=[])
+               pending=[], ready=[], tracked=[], applied=state["applied"], completed=[],
+               value=core.payload(state["value"]), writes=[])
+    for write in bounded_list(state["writes"]):
+        core.fields(write, "value completed")
+        core.natural(write["completed"], 16)
+        out["writes"].append(dict(value=context(write["value"]), completed=write["completed"]))
     for field in ("pending", "ready", "tracked", "completed"):
         for item in bounded_list(state[field]):
-            core.fields(item, "context index acks" if field == "pending" else "context index")
+            core.fields(item, "context index acks" if field == "pending" else
+                        "context index value" if field == "completed" else "context index")
             ctx = context(item["context"])
             index = item["index"]
             if field == "tracked" and index is None:
@@ -43,6 +50,8 @@ def read_state(state):
             else:
                 core.natural(index, 32)
             result = dict(context=ctx, index=index)
+            if field == "completed":
+                result["value"] = core.payload(item["value"])
             if field == "pending":
                 acks = bounded_list(item["acks"])
                 core.require(all(type(n) is int and n in (1, 2, 3) for n in acks)
@@ -114,6 +123,16 @@ def load(path):
     return events
 
 
+def environment(states):
+    result = copy.deepcopy(states)
+    for state in result:
+        for field in ("log", "durable_log"):
+            for entry in state[field]:
+                entry["data"] = core.payload(entry["data"])
+                entry["context"] = core.payload(entry["context"])
+    return result
+
+
 def instructions(events):
     result = []
     for i, event in enumerate(events):
@@ -121,9 +140,10 @@ def instructions(events):
             kind=event["kind"], node=event["node"],
             has_packet=event["input"] is not None and packet(event["input"]) is not None,
             context=context(event["value"]) if event["kind"] == "read" else "",
+            command=core.payload(event["value"]) if event["kind"] == "propose" else "",
             target=int(event["value"]) if event["kind"] == "apply" else 0,
             packet=(packet(event["input"]) or "") if event["input"] is not None else "",
-            before=events[max(0, i-1)]["states"], after=event["states"],
+            before=environment(events[max(0, i-1)]["states"]), after=environment(event["states"]),
             reads=[read_state(s) for s in event["reads"]],
             pending=[p for m in event["pending"] if (p := packet(m)) is not None],
             network=[p for m in event["network"] if (p := packet(m)) is not None],
@@ -170,14 +190,20 @@ def validate(path, timeout=60):
                 or (process.returncode == 12 and "Error: Invariant ReadBarrierInv is violated." in text)):
             raise core.ConformanceError(f"Read conformance rejected: {run}")
         raise RuntimeError(f"Incomplete or failed read TLC run ({process.returncode}): {run}")
-    print(f"PASS {Path(path).name}: consensus and all {len(events)} read observations", flush=True)
+    history = history_check.extract(events)
+    (run / "history.json").write_text(json.dumps(history, indent=2) + "\n")
+    linearizable, history_run = history_check.check(history, timeout)
+    (run / "history-run.txt").write_text(str(history_run) + "\n")
+    if not linearizable:
+        raise core.ConformanceError(f"Register history is not linearizable: {history_run}")
+    print(f"PASS {Path(path).name}: consensus, {len(events)} read/application observations, and register history", flush=True)
     return run
 
 
 def negatives(path, timeout):
     events = load(path)
     directory = Path(tempfile.mkdtemp(prefix="read-mutations-", dir=check.CACHE))
-    names = ("premature-ready", "forged-ack", "wrong-context", "wrong-index", "early-callback", "duplicate-callback", "apply-ahead", "heartbeat-commit")
+    names = ("premature-ready", "forged-ack", "wrong-context", "wrong-index", "early-callback", "duplicate-callback", "apply-ahead", "heartbeat-commit", "wrong-register", "wrong-read-value", "early-write-callback")
     for name in names:
         changed = copy.deepcopy(events)
         if name == "premature-ready":
@@ -194,7 +220,7 @@ def negatives(path, timeout):
             e["reads"][e["node"]-1]["tracked"][0]["index"] += 1
         elif name == "early-callback":
             e = next(e for e in changed if e["kind"] == "complete_reads")
-            e["reads"][0]["completed"].append(dict(context="deferred", index=0))
+            e["reads"][0]["completed"].append(dict(context="deferred", index=0, value=""))
         elif name == "duplicate-callback":
             e = changed[-1]
             e["reads"][0]["completed"].append(copy.deepcopy(e["reads"][0]["completed"][0]))
@@ -207,6 +233,15 @@ def negatives(path, timeout):
                      and e["input"]["kind"] == "heartbeat" and e["input"]["commit"] > 0
                      and changed[i-1]["states"][e["node"]-1]["commit"] == 0)
             e["states"][e["node"]-1]["commit"] = 0
+        elif name == "wrong-register":
+            e = next(e for e in changed if e["kind"] == "apply" and e["reads"][e["node"]-1]["value"])
+            e["reads"][e["node"]-1]["value"] = "corrupted"
+        elif name == "wrong-read-value":
+            e = next(e for e in changed if e["kind"] == "complete_reads" and e["reads"][e["node"]-1]["completed"])
+            e["reads"][e["node"]-1]["completed"][0]["value"] = "corrupted"
+        elif name == "early-write-callback":
+            e = next(e for e in changed if e["kind"] == "propose")
+            e["reads"][e["node"]-1]["writes"][-1]["completed"] = 1
         target = directory / f"{name}.ndjson"
         write_events(target, changed)
         try:
@@ -215,6 +250,8 @@ def negatives(path, timeout):
             print(f"PASS read semantic negative: {name}", flush=True)
         else:
             raise RuntimeError(f"Read mutation unexpectedly accepted: {name}")
+    history_check.negatives(history_check.extract(events), timeout)
+    history_check.regressions(timeout)
     print(f"Read negative fixtures: {directory}; {len(names)} semantic mutations rejected", flush=True)
 
 

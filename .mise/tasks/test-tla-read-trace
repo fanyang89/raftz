@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Check real RawNode/ProposalTracker reads against consensus and ReadIndex trace models"
+#MISE description="Check real reads and register results against consensus, application, and client-history models"
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"

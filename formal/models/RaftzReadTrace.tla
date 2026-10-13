@@ -13,7 +13,7 @@ Remove(m, bag) == bag (-) SetToBag({m})
 FilterBag(bag, predicate(_)) == [m \in {x \in DOMAIN bag : predicate(x)} |-> bag[m]]
 
 EmptyReads == [waiting |-> <<>>, pending |-> <<>>, ready |-> <<>>,
-               tracked |-> <<>>, applied |-> 0, completed |-> <<>>]
+               tracked |-> <<>>, applied |-> 0, completed |-> <<>>, value |-> "", writes |-> <<>>]
 
 Find(xs, ctx) ==
     LET positions == {k \in DOMAIN xs : xs[k].context = ctx}
@@ -29,7 +29,9 @@ Reset(s, e) == [n \in Nodes |->
     THEN [s[n] EXCEPT !.waiting = <<>>, !.pending = <<>>] ELSE s[n]]
 
 Invoke(s, e) ==
-    IF e.kind # "read" THEN s
+    IF e.kind = "propose" THEN [s EXCEPT
+        ![e.node].writes = Append(@, [value |-> e.command, completed |-> 0])]
+    ELSE IF e.kind # "read" THEN s
     ELSE [s EXCEPT
         ![e.node].waiting = Append(@, e.context),
         ![e.node].tracked = Append(@, [context |-> e.context, index |-> -1])]
@@ -75,13 +77,26 @@ Complete(s, n) ==
     LET completed == SelectSeq(s[n].tracked, LAMBDA t : Eligible(t, s[n].applied))
     IN [s EXCEPT
         ![n].completed = @ \o [k \in DOMAIN completed |->
-            [context |-> completed[k].context, index |-> s[n].applied]],
+            [context |-> completed[k].context, index |-> s[n].applied, value |-> s[n].value]],
         ![n].tracked = SelectSeq(@, LAMBDA t : ~Eligible(t, s[n].applied))]
+
+Apply(s, e) ==
+    LET n == e.node
+        indices == {k \in (s[n].applied+1)..e.target : e.after[n].log[k].data # ""}
+        commands == {e.after[n].log[k].data : k \in indices}
+        value == IF indices = {} THEN s[n].value
+                 ELSE e.after[n].log[CHOOSE k \in indices : \A j \in indices : k >= j].data
+    IN [s EXCEPT
+        ![n].applied = e.target,
+        ![n].value = value,
+        ![n].writes = [k \in DOMAIN s[n].writes |->
+            IF s[n].writes[k].value \in commands
+            THEN [s[n].writes[k] EXCEPT !.completed = 1] ELSE s[n].writes[k]]]
 
 ReadStep(e) ==
     LET s == Replay(BeforeReplay(e), e)
     IN CASE e.kind = "read_ready" -> Mark(s, e.node)
-         [] e.kind = "apply" -> [s EXCEPT ![e.node].applied = e.target]
+         [] e.kind = "apply" -> Apply(s, e)
          [] e.kind = "complete_reads" -> Complete(s, e.node)
          [] OTHER -> s
 
@@ -118,6 +133,8 @@ EnabledEvent(e) ==
     /\ IF ~e.has_packet THEN TRUE ELSE e.packet \in DOMAIN network
     /\ IF e.kind = "read"
        THEN e.after[e.node].role = "leader" /\ e.context \notin DOMAIN fences ELSE TRUE
+    /\ IF e.kind = "propose"
+       THEN \A n \in Nodes : \A w \in SeqSet(reads[n].writes) : w.value # e.command ELSE TRUE
     /\ IF e.kind = "apply"
        THEN reads[e.node].applied < e.target
             /\ e.target <= e.after[e.node].commit
@@ -131,6 +148,8 @@ Matches(s, expected) == \A n \in Nodes :
     /\ s[n].ready = expected[n].ready
     /\ s[n].tracked = expected[n].tracked
     /\ s[n].applied = expected[n].applied
+    /\ s[n].value = expected[n].value
+    /\ s[n].writes = expected[n].writes
     /\ BagOf(s[n].completed) = BagOf(expected[n].completed)
 
 TraceInit ==

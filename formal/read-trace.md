@@ -12,8 +12,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 formal/read_trace_check.py \
 ```
 
 This checks two recorded executions of real `RawNode`, `ReadOnly`, `MemoryStorage`,
-and `ProposalTracker` code. It extends the [consensus trace driver](trace.md), not
-production code. It is distinct from the exhaustive, conditional
+`ProposalTracker`, and a test register `StateMachine`. It extends the
+[consensus trace driver](trace.md), not production code. It is distinct from the exhaustive, conditional
 [ReadIndex design model](read-index.md): the trace adapter checks concrete
 operation boundaries, not all schedules or a refinement theorem between the two
 TLA+ models.
@@ -22,29 +22,29 @@ The fixed three-voter profile retains atomic MemoryStorage persistence, messages
 released only after persistence, disabled PreVote/check-quorum, no membership
 changes, snapshots, compaction, restart or RPC. Reads are local to a leader,
 Safe-only, and have globally fresh nonempty UTF-8 contexts. `read_mode` explicitly
-selects version 2 of the trace schema; the existing version-1 consensus profile
-still rejects contexts and read fields.
+selects version 3 of the trace schema with `application = "register-v1"`;
+the existing version-1 consensus profile still rejects contexts and read fields.
 
 Unlike the original driver, read scenarios call `advanceAppend` without claiming
 application progress. Separate `apply` operations call `advanceApplyTo`. The
 driver passes actual Ready read states into the real tracker's `markReadReady`,
-then invokes `completeReadyReads` separately. Actual callbacks record both their
-count and the RawNode applied index at invocation. No fake callback is generated
-from an expected model result. The driver asserts the expected blocked/completed
+then invokes `completeReadyReads` separately. Actual callbacks record their
+count, the RawNode applied index and the application value at invocation. No fake
+callback is generated from an expected model result. The driver asserts the expected blocked/completed
 requests as well as final commit indices.
 
-This is **not** the production Raftor/ReadyProcessor loop. There is no state
-machine executing a command or returning a read value: the verified interface
-is the read-index/apply barrier and callback, not application linearizability.
-Timeouts and cancellation are absent. On leadership loss, Raft drops unconfirmed
-read queues; this driver intentionally leaves the tracker's request pending. The
+This is **not** the production Raftor/ReadyProcessor loop. The driver now executes
+register commands through a StateMachine vtable, records real write/read
+callbacks and checks the resulting [finite register histories](register-history.md).
+This is not a claim about all application executions. Timeouts and cancellation
+are absent. On leadership loss, Raft drops unconfirmed read queues; this driver intentionally leaves the tracker's request pending. The
 isolated read remains incomplete at the end, rather than pretending to verify
 Raftor's cancellation behavior.
 
-## Two mandatory checks of the same complete execution
+## Three mandatory checks of the same complete execution
 
-`read_trace_check.py` validates every version-2 field and retains all observations.
-It requires both checks below to pass; there is no option to skip consensus.
+`read_trace_check.py` validates every version-3 field and retains all observations.
+All three checks below must pass; there is no option to skip consensus or history.
 
 1. **Consensus projection.** Remove only the additional read snapshots and
    heartbeat contexts. Map `read` to a heartbeat-generating operation and
@@ -58,7 +58,11 @@ It requires both checks below to pass; there is no option to skip consensus.
    commits and committed-entry terms. The model derives read state from the
    named operations and inputs, then compares it with the real snapshots.
    Observed read indices, ACKs, callbacks and queue contents are never assigned
-   into model state to make a mismatch pass.
+   into model state to make a mismatch pass. The model also derives the register
+   value from the checked applied log prefix and verifies real write callbacks.
+3. **Register history.** Extract real invocation/response intervals, keeping
+   pending operations. Require a TLA+ linearization witness for completed
+   operations and any needed pending writes; see [history semantics](register-history.md).
 
 The read model compares, for all three nodes after every operation:
 
@@ -66,7 +70,8 @@ The read model compares, for all three nodes after every operation:
 - produced read states, including Ready-owned states before tracker handoff;
 - tracker requests and their optional ready indices;
 - the actual RawNode applied cursor;
-- callback `(context, applied index)` bags, preserving multiplicity;
+- callback `(context, applied index, value)` bags, preserving multiplicity;
+- register values and proposal callback counts;
 - pending and in-flight contextual heartbeat/request-response bags, preserving
   source, destination, term, context and multiplicity.
 
@@ -84,8 +89,8 @@ not part of the contract. Registration/queue order remains a sequence.
 | Receive contextual heartbeat response | Consume that response, insert the distinct sender's ACK, and release the queue prefix only on a majority |
 | `getReady` | Ownership movement is a stutter in the combined produced-read-state observation |
 | `read_ready` | Transfer produced indices to the existing tracker records |
-| `apply(index)` | Require strictly increasing progress no greater than checked committed/durable indices |
-| `complete_reads` | Complete exactly tracked requests with a ready index no greater than applied; record the callback's actual applied index |
+| `apply(index)` | Apply the checked log slice to the register; require increasing progress within committed/durable indices; derive write completions |
+| `complete_reads` | Complete eligible requests and record the callback's actual applied index and register value |
 | Role/term reset | Invalidate postponed and unconfirmed queues; do not fabricate callbacks |
 | Message release/drop/duplication | Move or modify the exact contextual packet bag |
 
@@ -93,8 +98,9 @@ At invocation, an observer-only `fences` entry records the maximum commit index
 visible across the consensus-checked nodes. `ReadBarrierInv` requires confirmed
 indices and completed callbacks to cover this prefix. The fence does not enable
 protocol actions or choose their results. Completion's transition additionally
-requires the confirmed index to have been applied. These are finite execution
-checks of prefix freshness/barrier safety, not a full client-history checker.
+requires the confirmed index to have been applied. This second pass checks
+prefix freshness/barrier and application safety. The third pass separately
+checks linearizability of the finite register history.
 
 ## Heartbeat mapping discrepancy found during integration
 
@@ -120,41 +126,46 @@ Checked with Zig 0.16.0, the existing pinned TLC jars and OpenJDK 25:
 
 | Execution | Observations | Consensus generated / distinct | Read generated / distinct |
 | --- | --- | --- | --- |
-| Current-term postponement, later-quorum batch release, duplicate response, delayed apply, read after a write | 175 | 345 / 344 | 177 / 176 |
+| Postponement, batch release, duplication, delayed apply, completed/overlapping writes, pending write | 278 | 548 / 547 | 280 / 279 |
 | Isolated old leader, newer leader write, unconfirmed old read, healing/reset, new leader read | 178 | 364 / 363 | 180 / 179 |
 
-Both complete: the first issues four reads and completes all four; the second
-issues two reads and completes only the new leader's read. The batch scenario
+Both complete: the first issues six reads and completes all six, acknowledges
+two writes and leaves one write pending; the second issues two reads and
+completes only the new leader's read, alongside one successful write. The batch scenario
 releases `batch-first` using the quorum for `batch-last` before delivering any
 heartbeat for `batch-first`. Completion is attempted while applied lags and
 succeeds only after explicit application advancement. A duplicated response and
 late responses do not produce a second callback.
 
-Eight schema-valid semantic mutations are rejected: premature read state,
+Eleven schema-valid semantic mutations are rejected: premature read state,
 forged ACK, wrong heartbeat context, wrong tracker index, early callback,
-duplicate callback, apply beyond commit, and the heartbeat commit discrepancy.
-For the first seven, consensus still passes and the read model rejects; the last
-is rejected by consensus. Malformed-input regressions cover profile mismatch,
+duplicate callback, apply beyond commit, the heartbeat commit discrepancy,
+corrupt register state, wrong returned value and early write completion.
+Consensus rejects the heartbeat discrepancy; the read/application model rejects
+the other ten. Two history mutations and seven dedicated history regressions
+exercise the third pass independently. Malformed-input regressions cover profile mismatch,
 unknown fields/events, missing terminal, appended suffix, reordered numbering,
 duplicate JSON keys, malformed contexts/ACKs/indices and truncated lines.
 
-Every successful check requires TLC exit zero, completed search, final empty
+Successful consensus/read checks require TLC exit zero, completed search, final empty
 queue and the exact final observation/instruction-count marker. Only the expected
 read invariant violation or TLC deadlock exit is semantic rejection; timeouts,
 parse errors, unrelated invariants and incomplete searches fail the gate rather
-than count as negative evidence. Both stages have a 60-second timeout per trace.
+than count as negative evidence. Each stage has a 60-second timeout per trace.
+The history stage uses an explicit anti-invariant to find an existential witness,
+not the conformance pass/fail convention; see its [verdict rules](register-history.md).
 There are no state constraints, simulation or ignored trace suffixes. Only the
-fully consumed terminal state has an intentional self-loop.
+fully consumed conformance terminal state has an intentional self-loop.
 
-The task also runs 67 Python tests. The default Zig suite passes 791/791 tests;
+The task also runs 95 Python tests. The default Zig suite passes 791/791 tests;
 the separate trace build now executes four scenarios. Existing consensus traces,
 9 semantic/5 structural negatives, and the upstream baseline are retained.
 Artifacts live under `.cache/tla/read-*.ndjson`, `read-mutations-*/`, and
 `runs/read-trace-*/`; each read run records its input, projection, steps, model,
-config, command, log, state files and a pointer to the consensus-stage artifacts.
+config, command, log, state files and pointers to consensus/history artifacts.
 
-Remaining work includes application values/history checking, follower-forwarded
-reads, stale responses across terms, cancellations, context reuse/incarnations,
+Remaining work includes broader application histories and production integration,
+follower-forwarded reads, stale responses across terms, cancellations, context reuse/incarnations,
 leases and joint consensus, production scheduling, partial durability and
 unbounded refinement/liveness proofs. Passing these two executions establishes
 none of those broader claims.

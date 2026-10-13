@@ -28,7 +28,7 @@ keeps persistence and message ownership visible without adding production hooks.
 The task does not run by default in `zig build test`: Java and pinned TLA jars are
 an explicit opt-in dependency. The dedicated Zig build target always reruns its
 four test executions: the two version-1 scenarios described here and two
-[version-2 read scenarios](read-trace.md). This mise task validates the former;
+[version-3 read/register scenarios](read-trace.md). This mise task validates the former;
 `mise run test-tla-read-trace` performs the separate read gate.
 
 ## Environment and scope
@@ -218,7 +218,7 @@ leader-ack-before-persist, missing proposal operation (renumbered with a valid
 terminal), and message causality. Five structural negatives cover empty input,
 partial last line, missing terminal, unsupported event and appended suffix.
 Negatives are generated from the current real execution, not accepted/rejected
-by filename or hash. The combined formal runner suite now passes 67 tests,
+by filename or hash. The combined formal runner suite now passes 95 tests,
 including exact final queue-count regressions and read-profile checks. `mise run test` passes 791/791
 default Zig tests separately; the shared trace build passes 4/4 additional Zig
 tests (two consensus and two read scenarios). `mise run fmt-check`,

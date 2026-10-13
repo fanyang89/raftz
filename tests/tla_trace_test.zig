@@ -38,6 +38,50 @@ fn message(allocator: std.mem.Allocator, m: raft.Message) !Message {
 }
 
 const ReadResult = struct { context: []const u8, index: u64 };
+const CompletedRead = struct { context: []const u8, index: u64, value: []const u8 };
+const WriteResult = struct { value: []const u8, completed: usize };
+const Register = struct {
+    value: []u8 = &.{},
+
+    fn deinit(self: *Register) void {
+        a.free(self.value);
+    }
+
+    fn stateMachine(self: *Register) raft.StateMachine {
+        return .{ .ctx = self, .vtable = &vtable };
+    }
+
+    fn applyImpl(ctx: *anyopaque, entry: raft.Entry) raft.Error!raft.ApplyResult {
+        const self: *Register = @ptrCast(@alignCast(ctx));
+        const value = try a.dupe(u8, entry.data);
+        a.free(self.value);
+        self.value = value;
+        return .{};
+    }
+
+    fn takeSnapshot(_: *anyopaque, _: std.mem.Allocator, _: u64, _: u64, _: raft.ConfState) raft.Error!raft.Snapshot {
+        return error.Fatal;
+    }
+
+    fn restoreSnapshot(_: *anyopaque, _: raft.SnapshotMetadata, _: raft.SnapshotReader) raft.Error!void {
+        return error.Fatal;
+    }
+
+    const vtable: raft.StateMachine.VTable = .{ .apply = applyImpl, .take_snapshot = takeSnapshot, .restore_snapshot = restoreSnapshot };
+};
+const WriteCapture = struct {
+    value: []const u8,
+    node: *raft.RawNode,
+    completed: usize = 0,
+
+    fn invoke(ctx: *anyopaque, result: raft.ProposalResult) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        switch (result) {
+            .ok => self.completed += 1,
+            .err => @panic("unexpected write failure"),
+        }
+    }
+};
 const PendingRead = struct { context: []const u8, index: u64, acks: []u64 };
 const TrackedRead = struct { context: []const u8, index: ?u64 };
 const ReadObservation = struct {
@@ -46,13 +90,17 @@ const ReadObservation = struct {
     ready: []ReadResult,
     tracked: []TrackedRead,
     applied: u64,
-    completed: []ReadResult,
+    completed: []CompletedRead,
+    value: []const u8,
+    writes: []WriteResult,
 };
 const ReadCapture = struct {
     context: []const u8,
     node: *raft.RawNode,
     count: usize = 0,
     applied: u64 = 0,
+    machine: *Register,
+    value: []u8 = &.{},
 
     fn invoke(ctx: *anyopaque, result: raft.ReadIndexResult) void {
         const self: *@This() = @ptrCast(@alignCast(ctx));
@@ -62,6 +110,9 @@ const ReadCapture = struct {
         }
         self.count += 1;
         self.applied = self.node.raft.raft_log.applied;
+        const value = a.dupe(u8, self.machine.value) catch @panic("cannot record read result");
+        a.free(self.value);
+        self.value = value;
     }
 };
 
@@ -78,6 +129,9 @@ const Cluster = struct {
     held_reads: [3]std.ArrayList(ReadResult) = .{ .empty, .empty, .empty },
     captures: [8]ReadCapture = undefined,
     capture_count: usize = 0,
+    machines: [3]Register = .{ .{}, .{}, .{} },
+    writes: [8]WriteCapture = undefined,
+    write_count: usize = 0,
 
     fn config(id: u64) raft.Config {
         return .{ .id = id, .election_tick = 10, .heartbeat_tick = 1, .pre_vote = false, .check_quorum = false, .batch_append = false, .priority = 0, .load_state_on_startup = true, .election_timeout_seed = 42, .max_apply_unpersisted_log_limit = 0, .disable_proposal_forwarding = true };
@@ -96,11 +150,17 @@ const Cluster = struct {
             try store.setRaftState(a, .{ .conf_state = cs });
             node.* = try raft.RawNode.init(a, config(id), store.asStorage());
         }
-        try self.line(.{ .kind = "header", .version = if (self.read_mode) @as(u32, 2) else @as(u32, 1), .voters = .{ 1, 2, 3 }, .pre_vote = false, .check_quorum = false, .transfer = false, .read_index = self.read_mode, .snapshot = false, .compaction = false, .atomic_memory_storage = true, .send_after_persist = true });
+        if (self.read_mode) {
+            try self.line(.{ .kind = "header", .version = 3, .application = "register-v1", .voters = .{ 1, 2, 3 }, .pre_vote = false, .check_quorum = false, .transfer = false, .read_index = true, .snapshot = false, .compaction = false, .atomic_memory_storage = true, .send_after_persist = true });
+        } else {
+            try self.line(.{ .kind = "header", .version = 1, .voters = .{ 1, 2, 3 }, .pre_vote = false, .check_quorum = false, .transfer = false, .read_index = false, .snapshot = false, .compaction = false, .atomic_memory_storage = true, .send_after_persist = true });
+        }
         try self.observe("init", 0, null, "");
     }
 
     fn deinit(self: *Cluster) void {
+        for (&self.machines) |*machine| machine.deinit();
+        for (self.captures[0..self.capture_count]) |capture| a.free(capture.value);
         for (&self.trackers, &self.held_reads) |*tracker, *held| {
             tracker.deinit();
             for (held.items) |item| a.free(item.context);
@@ -192,13 +252,17 @@ const Cluster = struct {
                 for (held.items) |item| try ready.append(alloc, item);
                 for (r.read_states.items) |item| try ready.append(alloc, .{ .context = item.request_ctx, .index = item.index });
                 var tracked: std.ArrayList(TrackedRead) = .empty;
-                var completed: std.ArrayList(ReadResult) = .empty;
+                var completed: std.ArrayList(CompletedRead) = .empty;
+                var writes: std.ArrayList(WriteResult) = .empty;
+                for (self.writes[0..self.write_count]) |write| {
+                    if (write.node == node) try writes.append(alloc, .{ .value = write.value, .completed = write.completed });
+                }
                 for (self.captures[0..self.capture_count]) |capture| {
                     if (capture.node != node) continue;
                     if (tracker.reads.get(capture.context)) |item| try tracked.append(alloc, .{ .context = capture.context, .index = item.ready_index });
-                    for (0..capture.count) |_| try completed.append(alloc, .{ .context = capture.context, .index = capture.applied });
+                    for (0..capture.count) |_| try completed.append(alloc, .{ .context = capture.context, .index = capture.applied, .value = capture.value });
                 }
-                out.* = .{ .waiting = waiting.items, .pending = pending_reads.items, .ready = ready.items, .tracked = tracked.items, .applied = r.raft_log.applied, .completed = completed.items };
+                out.* = .{ .waiting = waiting.items, .pending = pending_reads.items, .ready = ready.items, .tracked = tracked.items, .applied = r.raft_log.applied, .completed = completed.items, .value = self.machines[r.id - 1].value, .writes = writes.items };
             }
             try self.line(.{ .kind = kind, .seq = self.seq, .node = id, .input = if (input) |m| try message(alloc, m) else null, .value = value, .states = states, .pending = pending.items, .network = network.items, .reads = reads });
         } else {
@@ -265,6 +329,16 @@ const Cluster = struct {
 
     fn propose(self: *Cluster, id: u64, value: []const u8) !void {
         if (value.len == 0) return error.EmptyProposal;
+        if (self.read_mode) {
+            if (self.write_count == self.writes.len) return error.WriteLimit;
+            for (self.writes[0..self.write_count]) |write| {
+                if (std.mem.eql(u8, write.value, value)) return error.DuplicateWriteValue;
+            }
+            const capture = &self.writes[self.write_count];
+            capture.* = .{ .value = value, .node = &self.nodes[id - 1] };
+            self.write_count += 1;
+            try self.trackers[id - 1].track(value, .{ .ctx = capture, .function = WriteCapture.invoke }, 0, 0);
+        }
         try self.nodes[id - 1].propose("", value);
         try self.observe("propose", id, null, value);
         try self.flush(id);
@@ -283,7 +357,7 @@ const Cluster = struct {
             if (std.mem.eql(u8, capture.context, ctx)) return error.DuplicateRead;
         }
         const capture = &self.captures[self.capture_count];
-        capture.* = .{ .context = ctx, .node = &self.nodes[id - 1] };
+        capture.* = .{ .context = ctx, .node = &self.nodes[id - 1], .machine = &self.machines[id - 1] };
         self.capture_count += 1;
         try self.trackers[id - 1].trackRead(ctx, .{ .ctx = capture, .function = ReadCapture.invoke }, 0, 0);
         try self.nodes[id - 1].readIndex(ctx);
@@ -293,7 +367,19 @@ const Cluster = struct {
 
     fn apply(self: *Cluster, id: u64, index: u64) !void {
         try std.testing.expect(index <= self.stores[id - 1].core.raft_state.hard_state.commit);
-        self.nodes[id - 1].advanceApplyTo(index);
+        const node = &self.nodes[id - 1];
+        const machine = self.machines[id - 1].stateMachine();
+        const start = node.raft.raft_log.applied;
+        for (self.stores[id - 1].core.entries.items[@intCast(start)..@intCast(index)]) |entry| {
+            if (entry.data.len != 0) {
+                var result = try machine.apply(entry);
+                defer result.deinit(a);
+                node.advanceApplyTo(entry.index);
+                self.trackers[id - 1].complete(entry.data, result.response orelse "");
+            } else {
+                node.advanceApplyTo(entry.index);
+            }
+        }
         const target = try std.fmt.allocPrint(a, "{}", .{index});
         defer a.free(target);
         try self.observe("apply", id, null, target);
@@ -433,7 +519,24 @@ test "tla read trace: current-term gate, batched confirmation and delayed apply"
     try c.apply(1, 2);
     try c.completeReads(1);
     try std.testing.expectEqual(@as(usize, 1), c.captures[3].count);
-    try c.finish(".cache/tla/read-batch.ndjson", 2);
+    try std.testing.expectEqualStrings("after-read", c.captures[3].value);
+    try std.testing.expectEqual(@as(usize, 1), c.writes[0].completed);
+    try c.readIndex(1, "after-completed-write");
+    try c.drain();
+    try c.completeReads(1);
+    try std.testing.expectEqualStrings("after-read", c.captures[4].value);
+    try c.readIndex(1, "overlap");
+    try c.propose(1, "overlap-write");
+    try c.drain();
+    try c.apply(1, 3);
+    try c.completeReads(1);
+    try std.testing.expectEqualStrings("overlap-write", c.captures[5].value);
+    try std.testing.expectEqual(@as(usize, 1), c.writes[1].completed);
+    c.isolated = 1;
+    try c.propose(1, "pending-write");
+    try c.drain();
+    try std.testing.expectEqual(@as(usize, 0), c.writes[2].completed);
+    try c.finish(".cache/tla/read-batch.ndjson", 3);
 }
 
 test "tla read trace: isolated old leader cannot confirm a fresh read" {
@@ -462,5 +565,7 @@ test "tla read trace: isolated old leader cannot confirm a fresh read" {
     try c.completeReads(2);
     try std.testing.expectEqual(@as(usize, 0), c.captures[0].count);
     try std.testing.expectEqual(@as(usize, 1), c.captures[1].count);
+    try std.testing.expectEqualStrings("new-leader-write", c.captures[1].value);
+    try std.testing.expectEqual(@as(usize, 1), c.writes[0].completed);
     try c.finish(".cache/tla/read-partition.ndjson", 3);
 }

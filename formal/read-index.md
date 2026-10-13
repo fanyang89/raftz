@@ -122,11 +122,12 @@ The existing upstream baseline and real Zig trace gate were also rerun after the
 tool pin refresh: the one-node baseline retains 4,650 distinct states; three-node
 simulation retains 100 sampled traces / 10,769 states; both real traces pass, and
 all nine semantic plus five structural trace mutations are rejected. The combined
-Python runner/adapter suite now passes 67 tests. These checks do not turn this standalone
+Python runner/adapter suite now passes 95 tests. These checks do not turn this standalone
 ReadIndex design model into implementation trace validation.
 
 A separate [real read trace slice](read-trace.md) now checks actual RawNode
 contexts/queues/read states, applied cursors and ProposalTracker callbacks using
-two mandatory consensus/read passes. It preserves the original consensus
-profile's fail-closed contract. Application values and client-history
-linearizability remain outside both checks.
+mandatory consensus and read/application passes, followed by a
+[finite register-history check](register-history.md). It preserves the original
+consensus profile's fail-closed contract. The standalone design model still
+abstracts away values; the new trace gate checks them for its recorded executions.
