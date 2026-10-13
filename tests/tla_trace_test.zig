@@ -15,6 +15,7 @@ const Message = struct {
     reject: bool,
     reject_hint: u64,
     entries: []Entry,
+    context: []const u8,
 };
 const State = struct { term: u64, vote: u64, commit: u64, role: []const u8, log: []Entry, durable_term: u64, durable_vote: u64, durable_commit: u64, durable_log: []Entry };
 
@@ -32,9 +33,37 @@ fn message(allocator: std.mem.Allocator, m: raft.Message) !Message {
         .append, .append_response, .request_vote, .request_vote_response, .heartbeat, .heartbeat_response => {},
         else => return error.UnsupportedMessage,
     }
-    if (m.context.len != 0 or m.priority != 0 or m.snapshot != null or m.request_snapshot != 0) return error.UnsupportedMessageFeature;
-    return .{ .kind = @tagName(m.msg_type), .from = m.from, .to = m.to, .term = m.term, .index = m.index, .log_term = m.log_term, .commit = m.commit, .commit_term = m.commit_term, .reject = m.reject, .reject_hint = m.reject_hint, .entries = try entries(allocator, m.entries) };
+    if (m.priority != 0 or m.snapshot != null or m.request_snapshot != 0) return error.UnsupportedMessageFeature;
+    return .{ .kind = @tagName(m.msg_type), .from = m.from, .to = m.to, .term = m.term, .index = m.index, .log_term = m.log_term, .commit = m.commit, .commit_term = m.commit_term, .reject = m.reject, .reject_hint = m.reject_hint, .entries = try entries(allocator, m.entries), .context = try allocator.dupe(u8, m.context) };
 }
+
+const ReadResult = struct { context: []const u8, index: u64 };
+const PendingRead = struct { context: []const u8, index: u64, acks: []u64 };
+const TrackedRead = struct { context: []const u8, index: ?u64 };
+const ReadObservation = struct {
+    waiting: [][]const u8,
+    pending: []PendingRead,
+    ready: []ReadResult,
+    tracked: []TrackedRead,
+    applied: u64,
+    completed: []ReadResult,
+};
+const ReadCapture = struct {
+    context: []const u8,
+    node: *raft.RawNode,
+    count: usize = 0,
+    applied: u64 = 0,
+
+    fn invoke(ctx: *anyopaque, result: raft.ReadIndexResult) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        switch (result) {
+            .ok => {},
+            .err => @panic("unexpected read failure"),
+        }
+        self.count += 1;
+        self.applied = self.node.raft.raft_log.applied;
+    }
+};
 
 const Cluster = struct {
     stores: [3]raft.MemoryStorage = undefined,
@@ -44,6 +73,11 @@ const Cluster = struct {
     trace: std.ArrayList(u8) = .empty,
     seq: usize = 0,
     isolated: u64 = 0,
+    read_mode: bool = false,
+    trackers: [3]raft.ProposalTracker = undefined,
+    held_reads: [3]std.ArrayList(ReadResult) = .{ .empty, .empty, .empty },
+    captures: [8]ReadCapture = undefined,
+    capture_count: usize = 0,
 
     fn config(id: u64) raft.Config {
         return .{ .id = id, .election_tick = 10, .heartbeat_tick = 1, .pre_vote = false, .check_quorum = false, .batch_append = false, .priority = 0, .load_state_on_startup = true, .election_timeout_seed = 42, .max_apply_unpersisted_log_limit = 0, .disable_proposal_forwarding = true };
@@ -55,17 +89,23 @@ const Cluster = struct {
 
     fn init(self: *Cluster) !void {
         for (&self.stores, &self.nodes, 1..) |*store, *node, id| {
+            self.trackers[id - 1] = raft.ProposalTracker.init(a);
             store.* = raft.MemoryStorage.init();
             var cs = raft.ConfState{ .voters = try a.dupe(u64, &.{ 1, 2, 3 }) };
             defer cs.deinit(a);
             try store.setRaftState(a, .{ .conf_state = cs });
             node.* = try raft.RawNode.init(a, config(id), store.asStorage());
         }
-        try self.line(.{ .kind = "header", .version = 1, .voters = .{ 1, 2, 3 }, .pre_vote = false, .check_quorum = false, .transfer = false, .read_index = false, .snapshot = false, .compaction = false, .atomic_memory_storage = true, .send_after_persist = true });
+        try self.line(.{ .kind = "header", .version = if (self.read_mode) @as(u32, 2) else @as(u32, 1), .voters = .{ 1, 2, 3 }, .pre_vote = false, .check_quorum = false, .transfer = false, .read_index = self.read_mode, .snapshot = false, .compaction = false, .atomic_memory_storage = true, .send_after_persist = true });
         try self.observe("init", 0, null, "");
     }
 
     fn deinit(self: *Cluster) void {
+        for (&self.trackers, &self.held_reads) |*tracker, *held| {
+            tracker.deinit();
+            for (held.items) |item| a.free(item.context);
+            held.deinit(a);
+        }
         for (&self.nodes, &self.stores, &self.held) |*node, *store, *held| {
             node.deinit();
             store.deinit(a);
@@ -80,7 +120,30 @@ const Cluster = struct {
     fn line(self: *Cluster, value: anytype) !void {
         const bytes = try std.json.Stringify.valueAlloc(a, value, .{});
         defer a.free(bytes);
-        try self.trace.appendSlice(a, bytes);
+        if (self.read_mode) {
+            try self.trace.appendSlice(a, bytes);
+            try self.trace.append(a, '\n');
+            return;
+        }
+        var parsed = try std.json.parseFromSlice(std.json.Value, a, bytes, .{ .allocate = .alloc_always });
+        defer parsed.deinit();
+        if (parsed.value.object.contains("states")) {
+            const object = &parsed.value.object;
+            for ([_][]const u8{ "pending", "network" }) |key| {
+                for (object.getPtr(key).?.array.items) |*m| {
+                    if (m.object.get("context").?.string.len != 0) return error.UnsupportedMessageFeature;
+                    _ = m.object.swapRemove("context");
+                }
+            }
+            if (object.getPtr("input").?.* != .null) {
+                const m = object.getPtr("input").?;
+                if (m.object.get("context").?.string.len != 0) return error.UnsupportedMessageFeature;
+                _ = m.object.swapRemove("context");
+            }
+        }
+        const encoded = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
+        defer a.free(encoded);
+        try self.trace.appendSlice(a, encoded);
         try self.trace.append(a, '\n');
     }
 
@@ -109,7 +172,38 @@ const Cluster = struct {
             for (held.items) |m| try pending.append(alloc, try message(alloc, m));
         }
         for (self.network.items) |m| try network.append(alloc, try message(alloc, m));
-        try self.line(.{ .kind = kind, .seq = self.seq, .node = id, .input = if (input) |m| try message(alloc, m) else null, .value = value, .states = states, .pending = pending.items, .network = network.items });
+        if (self.read_mode) {
+            var reads: [3]ReadObservation = undefined;
+            for (&self.nodes, &self.trackers, &self.held_reads, &reads) |*node, *tracker, *held, *out| {
+                const r = &node.raft;
+                if (r.read_only.option != .safe) return error.UnsupportedReadOption;
+                var waiting: std.ArrayList([]const u8) = .empty;
+                for (r.pending_read_index_messages.items) |m| try waiting.append(alloc, m.entries[0].data);
+                var pending_reads: std.ArrayList(PendingRead) = .empty;
+                for (r.read_only.queue.items) |ctx| {
+                    const status = r.read_only.pending.getPtr(ctx).?;
+                    var ack_ids: std.ArrayList(u64) = .empty;
+                    var it = status.acks.keyIterator();
+                    while (it.next()) |ack| try ack_ids.append(alloc, ack.*);
+                    std.mem.sort(u64, ack_ids.items, {}, std.sort.asc(u64));
+                    try pending_reads.append(alloc, .{ .context = ctx, .index = status.index, .acks = ack_ids.items });
+                }
+                var ready: std.ArrayList(ReadResult) = .empty;
+                for (held.items) |item| try ready.append(alloc, item);
+                for (r.read_states.items) |item| try ready.append(alloc, .{ .context = item.request_ctx, .index = item.index });
+                var tracked: std.ArrayList(TrackedRead) = .empty;
+                var completed: std.ArrayList(ReadResult) = .empty;
+                for (self.captures[0..self.capture_count]) |capture| {
+                    if (capture.node != node) continue;
+                    if (tracker.reads.get(capture.context)) |item| try tracked.append(alloc, .{ .context = capture.context, .index = item.ready_index });
+                    for (0..capture.count) |_| try completed.append(alloc, .{ .context = capture.context, .index = capture.applied });
+                }
+                out.* = .{ .waiting = waiting.items, .pending = pending_reads.items, .ready = ready.items, .tracked = tracked.items, .applied = r.raft_log.applied, .completed = completed.items };
+            }
+            try self.line(.{ .kind = kind, .seq = self.seq, .node = id, .input = if (input) |m| try message(alloc, m) else null, .value = value, .states = states, .pending = pending.items, .network = network.items, .reads = reads });
+        } else {
+            try self.line(.{ .kind = kind, .seq = self.seq, .node = id, .input = if (input) |m| try message(alloc, m) else null, .value = value, .states = states, .pending = pending.items, .network = network.items });
+        }
         self.seq += 1;
     }
 
@@ -126,14 +220,19 @@ const Cluster = struct {
             if (rounds > 20) return error.ReadyLimit;
             var rd = try node.getReady();
             defer rd.deinit(a);
-            if (rd.snapshot != null or rd.read_states.len != 0) return error.UnsupportedReady;
+            if (rd.snapshot != null or (!self.read_mode and rd.read_states.len != 0)) return error.UnsupportedReady;
+            for (rd.read_states) |item| {
+                const ctx = try a.dupe(u8, item.request_ctx);
+                errdefer a.free(ctx);
+                try self.held_reads[id - 1].append(a, .{ .context = ctx, .index = item.index });
+            }
             try self.hold(id, rd.messages());
             try self.hold(id, rd.persistedMessages());
             try self.observe("ready", id, null, "");
             try store.append(a, rd.entries);
             if (rd.hs) |hs| try store.setHardState(hs);
             try self.observe("persist", id, null, "");
-            var light = try node.advance(rd);
+            var light = if (self.read_mode) try node.advanceAppend(rd) else try node.advance(rd);
             defer light.deinit(a);
             try self.hold(id, light.messages);
             try self.observe("advance", id, null, "");
@@ -146,6 +245,15 @@ const Cluster = struct {
             try self.network.appendSlice(a, self.held[id - 1].items);
             self.held[id - 1].clearRetainingCapacity();
             try self.observe("release", id, null, "");
+            if (self.held_reads[id - 1].items.len > 0) {
+                if (node.raft.read_states.items.len != 0) return error.UnsupportedReadInterleaving;
+                for (self.held_reads[id - 1].items) |item| {
+                    self.trackers[id - 1].markReadReady(item.context, item.index);
+                    a.free(item.context);
+                }
+                self.held_reads[id - 1].clearRetainingCapacity();
+                try self.observe("read_ready", id, null, "");
+            }
         }
     }
 
@@ -169,20 +277,58 @@ const Cluster = struct {
         try self.flush(id);
     }
 
+    fn readIndex(self: *Cluster, id: u64, ctx: []const u8) !void {
+        if (!self.read_mode or self.capture_count == self.captures.len) return error.UnsupportedRead;
+        for (self.captures[0..self.capture_count]) |capture| {
+            if (std.mem.eql(u8, capture.context, ctx)) return error.DuplicateRead;
+        }
+        const capture = &self.captures[self.capture_count];
+        capture.* = .{ .context = ctx, .node = &self.nodes[id - 1] };
+        self.capture_count += 1;
+        try self.trackers[id - 1].trackRead(ctx, .{ .ctx = capture, .function = ReadCapture.invoke }, 0, 0);
+        try self.nodes[id - 1].readIndex(ctx);
+        try self.observe("read", id, null, ctx);
+        try self.flush(id);
+    }
+
+    fn apply(self: *Cluster, id: u64, index: u64) !void {
+        try std.testing.expect(index <= self.stores[id - 1].core.raft_state.hard_state.commit);
+        self.nodes[id - 1].advanceApplyTo(index);
+        const target = try std.fmt.allocPrint(a, "{}", .{index});
+        defer a.free(target);
+        try self.observe("apply", id, null, target);
+    }
+
+    fn completeReads(self: *Cluster, id: u64) !void {
+        self.trackers[id - 1].completeReadyReads(self.nodes[id - 1].raft.raft_log.applied);
+        try self.observe("complete_reads", id, null, "");
+    }
+
+    fn deliver(self: *Cluster, index: usize) !void {
+        var m = self.network.orderedRemove(index);
+        defer m.deinit(a);
+        if (self.isolated != 0 and (m.from == self.isolated or m.to == self.isolated)) {
+            try self.observe("drop", m.to, m, "");
+        } else {
+            try self.nodes[m.to - 1].step(try raft.cloneMessage(a, m));
+            try self.observe("receive", m.to, m, "");
+            try self.flush(m.to);
+        }
+    }
+
+    fn deliverMatching(self: *Cluster, kind: raft.MessageType, from: u64, to: u64, ctx: []const u8) !void {
+        for (self.network.items, 0..) |m, i| {
+            if (m.msg_type == kind and m.from == from and m.to == to and std.mem.eql(u8, m.context, ctx)) return self.deliver(i);
+        }
+        return error.MissingMessage;
+    }
+
     fn drain(self: *Cluster) !void {
         var count: usize = 0;
         while (self.network.items.len > 0) {
             count += 1;
             if (count > 500) return error.DeliveryLimit;
-            var m = self.network.orderedRemove(0);
-            defer m.deinit(a);
-            if (self.isolated != 0 and (m.from == self.isolated or m.to == self.isolated)) {
-                try self.observe("drop", m.to, m, "");
-            } else {
-                try self.nodes[m.to - 1].step(try raft.cloneMessage(a, m));
-                try self.observe("receive", m.to, m, "");
-                try self.flush(m.to);
-            }
+            try self.deliver(0);
         }
     }
 
@@ -245,4 +391,76 @@ test "tla trace: partition, leader change and conflicting suffix repair" {
         try std.testing.expectEqualStrings("healed", store.core.entries.items[4].data);
     }
     try c.finish(".cache/tla/conflict.ndjson", 5);
+}
+
+test "tla read trace: current-term gate, batched confirmation and delayed apply" {
+    var c = Cluster{ .read_mode = true };
+    try c.init();
+    defer c.deinit();
+    errdefer c.save(".cache/tla/read-batch.failed.ndjson") catch {};
+    try c.campaign(1);
+    try c.deliverMatching(.request_vote, 1, 2, "");
+    try c.deliverMatching(.request_vote_response, 2, 1, "");
+    try std.testing.expectEqual(@as(u64, 0), c.nodes[0].raft.raft_log.committed);
+    try c.readIndex(1, "deferred");
+    try std.testing.expectEqual(@as(usize, 1), c.nodes[0].raft.pendingReadIndexCount());
+    try c.drain();
+    try c.readIndex(1, "batch-first");
+    try c.readIndex(1, "batch-last");
+    try c.deliverMatching(.heartbeat, 1, 2, "batch-last");
+    for (c.network.items) |m| {
+        if (m.msg_type == .heartbeat_response and std.mem.eql(u8, m.context, "batch-last")) {
+            const duplicate = try raft.cloneMessage(a, m);
+            try c.network.append(a, duplicate);
+            try c.observe("duplicate", duplicate.to, duplicate, "");
+            break;
+        }
+    }
+    try c.deliverMatching(.heartbeat_response, 2, 1, "batch-last");
+    try std.testing.expectEqual(@as(usize, 0), c.nodes[0].raft.read_only.pendingReadCount());
+    try c.completeReads(1);
+    for (c.captures[0..3]) |capture| try std.testing.expectEqual(@as(usize, 0), capture.count);
+    try c.apply(1, 1);
+    try c.completeReads(1);
+    for (c.captures[0..3]) |capture| try std.testing.expectEqual(@as(usize, 1), capture.count);
+    try c.drain();
+    try c.propose(1, "after-read");
+    try c.drain();
+    try c.readIndex(1, "after-write");
+    try c.drain();
+    try c.completeReads(1);
+    try std.testing.expectEqual(@as(usize, 0), c.captures[3].count);
+    try c.apply(1, 2);
+    try c.completeReads(1);
+    try std.testing.expectEqual(@as(usize, 1), c.captures[3].count);
+    try c.finish(".cache/tla/read-batch.ndjson", 2);
+}
+
+test "tla read trace: isolated old leader cannot confirm a fresh read" {
+    var c = Cluster{ .read_mode = true };
+    try c.init();
+    defer c.deinit();
+    errdefer c.save(".cache/tla/read-partition.failed.ndjson") catch {};
+    try c.campaign(1);
+    try c.drain();
+    c.isolated = 1;
+    try c.campaign(2);
+    try c.drain();
+    try c.propose(2, "new-leader-write");
+    try c.drain();
+    try c.readIndex(1, "isolated");
+    try c.drain();
+    try c.completeReads(1);
+    try std.testing.expectEqual(@as(usize, 0), c.captures[0].count);
+    c.isolated = 0;
+    try c.beat(2);
+    try c.drain();
+    try std.testing.expectEqual(@as(usize, 0), c.nodes[0].raft.read_only.pendingReadCount());
+    try c.readIndex(2, "new-leader-read");
+    try c.drain();
+    try c.apply(2, 3);
+    try c.completeReads(2);
+    try std.testing.expectEqual(@as(usize, 0), c.captures[0].count);
+    try std.testing.expectEqual(@as(usize, 1), c.captures[1].count);
+    try c.finish(".cache/tla/read-partition.ndjson", 3);
 }

@@ -82,6 +82,20 @@ SendRequest(i, m) ==
              ELSE AppendEntries(i, m.mdest, <<m.mprevLogIndex+1, m.mprevLogIndex+Len(m.mentries)+1>>)
     /\ pendingMessages' = WithMessage(m, pendingMessages)
 
+ReceiveHeartbeat(m) ==
+    /\ CommitTo(m.mdest, m.mcommitIndex)
+    /\ m.mcommitIndex <= Len(log[m.mdest])
+    /\ Reply([mtype |-> AppendEntriesResponse, msubtype |-> "heartbeat",
+              mterm |-> currentTerm[m.mdest], msuccess |-> TRUE,
+              mmatchIndex |-> 0, msource |-> m.mdest, mdest |-> m.msource], m)
+    /\ UNCHANGED <<serverVars, candidateVars, leaderVars, log, configVars, durableState>>
+
+ReceiveAligned(m) ==
+    IF m.mtype = AppendEntriesRequest THEN
+        IF m.msubtype = "heartbeat" /\ m.mterm = currentTerm[m.mdest] /\ state[m.mdest] = Follower
+        THEN ReceiveHeartbeat(m) ELSE Receive(m)
+    ELSE Receive(m)
+
 TraceInit == /\ Init
              /\ pc = 1
              /\ micro = 0
@@ -95,7 +109,7 @@ Action(s) ==
       [] s.op = "client" -> ClientRequest(s.node, s.value)
       [] s.op = "commit" -> AdvanceCommitIndex(s.node)
       [] s.op = "send" -> SendRequest(s.node, s.msg)
-      [] s.op = "receive" -> /\ s.msg \in DOMAIN messages /\ Receive(s.msg) /\ vars' # vars
+      [] s.op = "receive" -> /\ s.msg \in DOMAIN messages /\ ReceiveAligned(s.msg) /\ vars' # vars
       [] s.op = "persist" -> Persist(s.node)
       [] s.op = "release" -> Release(s.node)
       [] s.op = "selfAck" -> SelfAck(s.node)

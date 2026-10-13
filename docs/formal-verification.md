@@ -103,7 +103,7 @@ Raftor's production loop, partial durability, or all internal Zig instructions
 within a composed call. See the [precise mapping, commands, real scenario counts,
 negative results and residual gaps](../formal/trace.md).
 
-### 3. Feature and storage extensions — initial ReadIndex design slice checked
+### 3. Feature and storage extensions — ReadIndex design and trace slices checked
 
 `mise run test-tla-read-index` checks a separate finite Safe ReadIndex design
 abstraction derived from inspection of `Raft`, `ReadOnly`, `ReadyProcessor`, and
@@ -112,14 +112,25 @@ explores 834,433 distinct states. Removing the current-term commit, quorum, or
 apply guard yields the expected counterexample. Completion and batch-release
 witnesses establish that these paths are reachable.
 
-This checks prefix freshness and the apply barrier **assuming consensus safety**;
-it neither models application values nor validates Zig read executions. Full
-client-observable linearizability is still unverified. See the [mapping,
-assumptions, bounds and evidence](../formal/read-index.md).
+The standalone model checks prefix freshness and the apply barrier **assuming
+consensus safety**. See the [mapping, assumptions, bounds and evidence](../formal/read-index.md).
+
+`mise run test-tla-read-trace` additionally validates two real RawNode and
+ProposalTracker read executions. Every observation must pass both the existing
+consensus adapter and a context/queue/ACK/apply/callback model. Eight semantic
+mutations are rejected. Integration exposed and corrected a local heartbeat
+adapter gap for a follower whose commit index starts at zero; imported source
+and production code are unchanged. See the [concrete mapping, results and
+remaining boundaries](../formal/read-trace.md).
+
+Neither check executes application reads or validates client result histories;
+full client-observable linearizability and production-loop conformance remain
+unverified.
 
 Still planned: PreVote/check-quorum/leader transfer; full joint consensus including
-entering/leaving and learners; snapshot installation and compaction; ReadIndex
-implementation traces and client histories; partial WAL persistence and recovery.
+entering/leaving and learners; snapshot installation and compaction; broader
+ReadIndex schedules, production integration and client histories; partial WAL
+persistence and recovery.
 Maintain a coverage table per feature and fault model. Do not advertise a
 capability as proved because its data field exists upstream.
 

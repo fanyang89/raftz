@@ -27,7 +27,9 @@ keeps persistence and message ownership visible without adding production hooks.
 
 The task does not run by default in `zig build test`: Java and pinned TLA jars are
 an explicit opt-in dependency. The dedicated Zig build target always reruns its
-two test executions; the mise task performs the actual conformance gate.
+four test executions: the two version-1 scenarios described here and two
+[version-2 read scenarios](read-trace.md). This mise task validates the former;
+`mise run test-tla-read-trace` performs the separate read gate.
 
 ## Environment and scope
 
@@ -160,6 +162,14 @@ cannot certify all intermediate Zig instructions inside a public call.
    branch can spin to the microstep limit and create a false deadlock. All
    non-stuttering intermediate states still check all eight invariants.
 
+5. **Heartbeat commit from zero.** Read trace integration exposed the upstream
+   empty-append branch retaining commit zero despite a heartbeat advertising a
+   higher commit. Local `ReceiveAligned` handles same-term follower heartbeats
+   with `CommitTo(mcommitIndex)` bounded by the log length and the normal reply;
+   higher-term/role transitions still use upstream receive. This matches
+   `Raft.handleHeartbeat`. All eight invariants remain enabled; see the
+   [observed discrepancy and negative regression](read-trace.md#heartbeat-mapping-discrepancy-found-during-integration).
+
 The local module builds on the pinned etcdraft definitions and attribution in
 [`upstream/etcd/tla/etcdraft.tla`](upstream/etcd/tla/etcdraft.tla). Upstream etcdraft
 and Traceetcdraft remain byte-for-byte unchanged. Traceetcdraft is not the
@@ -208,9 +218,10 @@ leader-ack-before-persist, missing proposal operation (renumbered with a valid
 terminal), and message causality. Five structural negatives cover empty input,
 partial last line, missing terminal, unsupported event and appended suffix.
 Negatives are generated from the current real execution, not accepted/rejected
-by filename or hash. Twenty focused adapter/runner tests (including exact final
-queue-count regressions) plus ten existing runner tests pass. `mise run test` passes 789/789 default Zig tests separately;
-the trace build passes 2/2 additional Zig tests. `mise run fmt-check`,
+by filename or hash. The combined formal runner suite now passes 67 tests,
+including exact final queue-count regressions and read-profile checks. `mise run test` passes 791/791
+default Zig tests separately; the shared trace build passes 4/4 additional Zig
+tests (two consensus and two read scenarios). `mise run fmt-check`,
 `git diff --check`, and upstream checksums pass. The upstream `test-tla` baseline
 also passes: 34,573 generated / 4,650 distinct single-node states, and 100 sampled
 three-node traces / 10,769 states. The three-node baseline is still simulation,

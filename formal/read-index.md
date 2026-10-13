@@ -4,7 +4,7 @@
 
 The existing `RaftzMC` wrapper checks the pinned etcd consensus baseline, and
 `RaftzTrace` checks two real fixed-membership RawNode executions. Neither contains
-ReadIndex state or checks client reads. They are retained unchanged. This model
+ReadIndex state or checks client reads. They remain separate from this model. This model
 is a separate, **conditional design check**, not an extension of the existing
 Zig trace adapter and not a proof that the Zig implementation refines this model.
 
@@ -121,10 +121,12 @@ Checked with the pinned TLC v1.8.0 asset (SHA-256 `c0d2f72a…`) and OpenJDK 25:
 The existing upstream baseline and real Zig trace gate were also rerun after the
 tool pin refresh: the one-node baseline retains 4,650 distinct states; three-node
 simulation retains 100 sampled traces / 10,769 states; both real traces pass, and
-all nine semantic plus five structural trace mutations are rejected. All 42
-Python runner/adapter tests pass. These checks do not turn this standalone
+all nine semantic plus five structural trace mutations are rejected. The combined
+Python runner/adapter suite now passes 67 tests. These checks do not turn this standalone
 ReadIndex design model into implementation trace validation.
 
-Next integration boundary: add actual ReadIndex contexts, read states, applied
-indices and client results to a dedicated deterministic Zig trace scenario,
-while preserving the existing consensus adapter's fail-closed input contract.
+A separate [real read trace slice](read-trace.md) now checks actual RawNode
+contexts/queues/read states, applied cursors and ProposalTracker callbacks using
+two mandatory consensus/read passes. It preserves the original consensus
+profile's fail-closed contract. Application values and client-history
+linearizability remain outside both checks.
