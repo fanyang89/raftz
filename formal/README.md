@@ -9,7 +9,7 @@ including elections, commits, leader change/conflict repair and atomic restart.
 A separate [Safe ReadIndex design model](read-index.md) checks prefix freshness
 and the apply barrier under explicit consensus assumptions; it is not Zig trace
 conformance or a complete linearizability proof. A [separate read trace gate](read-trace.md)
-now checks two real RawNode/ProposalTracker/register executions, including
+now checks three real RawNode/ProposalTracker/register executions, including
 [linearizability witnesses for their finite client histories](register-history.md).
 This does **not** prove correctness for all raftz executions. No TLAPS proof is
 included. A `THEOREM` declaration in an upstream module is not a checked proof.
@@ -123,7 +123,7 @@ Initial validation with the pinned tools and OpenJDK 25:
 | Three-node exhaustive check | Not completed as part of baseline validation |
 | Zig trace conformance | Two real executions pass; 9 semantic and 5 structural negatives rejected; see [trace results](trace.md) |
 | Safe ReadIndex design | Separate conditional model; 834,433 distinct three-voter states; see [bounds and negatives](read-index.md) |
-| Safe ReadIndex/register traces | Two real executions pass three checks; 11 trace and 2 history mutations rejected; see [scope and results](read-trace.md) |
+| Safe ReadIndex/register traces | Three real executions pass three checks; 15 trace/identity and 2 history mutations rejected; see [scope and results](read-trace.md) |
 | TLAPS proof | Not implemented |
 
 These are baseline model results only. Neither bounded exploration nor sampled

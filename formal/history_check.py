@@ -39,9 +39,10 @@ def extract(events):
     for event in events:
         if event["kind"] in ("read", "propose"):
             kind = "write" if event["kind"] == "propose" else "read"
-            key = (kind, event["value"])
+            identity = event["proposal_context"] if kind == "write" else event["value"]
+            key = (kind, identity)
             core.require(key not in operations, "Repeated history identity")
-            operations[key] = dict(id=kind + ":" + core.payload(event["value"]), kind=kind,
+            operations[key] = dict(id=kind + ":" + core.payload(identity), kind=kind,
                                    value=core.payload(event["value"]) if kind == "write" else "",
                                    result="", invoked=event["seq"], returned=-1)
             owners[key] = event["node"]
@@ -51,7 +52,7 @@ def extract(events):
             for write in state["writes"]:
                 core.require(write["completed"] in (0, 1), "Duplicate write completion")
                 if write["completed"]:
-                    returns.append((("write", write["value"]), ""))
+                    returns.append((("write", write["context"]), ""))
             for key, value in returns:
                 core.require(key not in seen, "Duplicate read completion")
                 seen.add(key)
@@ -126,6 +127,8 @@ def regressions(timeout):
         "future-pending-write": (False, [op("r", "read", 0, 1, result="A"), op("w", "write", 2, -1, value="A")]),
         "unwritten-value": (False, [op("r", "read", 0, 1, result="ghost")]),
         "stale-read": (False, [op("w", "write", 0, 1, value="A"), op("r", "read", 2, 3)]),
+        "repeated-values": (True, [op("a", "write", 0, 1, value="A"), op("b", "write", 2, 3, value="A"),
+                                   op("r", "read", 4, 5, result="A")]),
         "pending-read": (True, [op("w", "write", 0, 1, value="A"), op("r", "read", 2, -1)]),
     }
     for name, (expected, operations) in cases.items():

@@ -15,6 +15,7 @@ def observation(kind, seq, node=0, value=""):
     if value:
         result["value"] = value
     state = dict(waiting=[], pending=[], ready=[], tracked=[], applied=0, completed=[], value="", writes=[])
+    result["proposal_context"] = "write-1" if kind == "propose" else ""
     result["reads"] = [copy.deepcopy(state) for _ in range(3)]
     return result
 
@@ -64,6 +65,25 @@ class ReadTraceTests(unittest.TestCase):
         events = trace.load(self.path)
         self.assertEqual(len(trace.instructions(events)[3]["reads"][0]["completed"]), 1)
 
+    def test_proposal_identity_reaches_both_models(self):
+        events = trace.load(self.path)
+        proposal = trace.project(events[2])
+        step = next(s for s in trace.core.instructions([trace.project(e) for e in events]) if s["op"] == "client")
+        expected = "write-1".encode().hex()
+        self.assertEqual(proposal["proposal_context"], "write-1")
+        self.assertEqual(step["value"]["context"], expected)
+        self.assertEqual(trace.instructions(events)[2]["command_context"], expected)
+
+    def test_missing_proposal_identity_is_rejected(self):
+        self.rejects(lambda rows: rows[3].pop("proposal_context"))
+
+    def test_equal_values_keep_distinct_write_identities(self):
+        self.events[3]["reads"][0]["writes"] = [dict(context=ctx, value="same", completed=0) for ctx in ("a", "b")]
+        trace.write_events(self.path, self.events)
+        writes = trace.instructions(trace.load(self.path))[3]["reads"][0]["writes"]
+        self.assertEqual(writes[0]["value"], writes[1]["value"])
+        self.assertNotEqual(writes[0]["context"], writes[1]["context"])
+
     def test_legacy_header_cannot_enable_reads(self):
         self.rejects(lambda rows: rows[0].update(version=1, read_index=False))
 
@@ -112,7 +132,7 @@ class ReadTraceTests(unittest.TestCase):
             trace.load(self.path)
 
     def test_duplicate_json_key(self):
-        self.path.write_text(self.path.read_text().replace('"version": 3', '"version": 3, "version": 3'))
+        self.path.write_text(self.path.read_text().replace('"version": 4', '"version": 4, "version": 4'))
         with self.assertRaises(ValueError):
             trace.load(self.path)
 

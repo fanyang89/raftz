@@ -131,6 +131,41 @@ class TraceTests(unittest.TestCase):
             with self.subTest(replacement=replacement):
                 self.assertFalse(trace.completed(0, text.rsplit('\n', 1)[0] + '\n' + replacement, 7))
 
+    def contextual_events(self):
+        events = copy.deepcopy(self.events)
+        for e in events:
+            e["proposal_context"] = "write-1" if e["kind"] == "propose" else ""
+        return events
+
+    def test_contextual_profile_binds_actual_proposal_input(self):
+        events = self.contextual_events()
+        events[2]["states"][0]["log"] = [dict(index=1, term=1, data="test", context="different")]
+        trace.write_events(self.path, events)
+        loaded = trace.load(self.path)
+        step = next(s for s in trace.instructions(loaded) if s["op"] == "client")
+        self.assertEqual(step["value"]["context"], "write-1".encode().hex())
+        self.assertEqual(json.loads(self.path.read_text().splitlines()[0]), trace.CONTEXT_HEADER)
+
+    def test_legacy_header_cannot_silently_enable_contexts(self):
+        self.rejects(lambda rows: rows[1].update(proposal_context=""))
+
+    def test_contextual_header_requires_all_event_context_fields(self):
+        self.rejects(lambda rows: rows.__setitem__(0, trace.CONTEXT_HEADER))
+
+    def test_empty_contextual_proposal_is_rejected(self):
+        events = self.contextual_events()
+        events[2]["proposal_context"] = ""
+        trace.write_events(self.path, events)
+        with self.assertRaisesRegex(ValueError, "proposal context"):
+            trace.load(self.path)
+
+    def test_context_on_non_proposal_is_rejected(self):
+        events = self.contextual_events()
+        events[1]["proposal_context"] = "unexpected"
+        trace.write_events(self.path, events)
+        with self.assertRaisesRegex(ValueError, "proposal context"):
+            trace.load(self.path)
+
     def test_timeout_is_not_a_semantic_negative(self):
         import subprocess
         with mock.patch.object(trace.check, "classpath", return_value="unused"), \

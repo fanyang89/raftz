@@ -4,9 +4,9 @@
 
 `mise run test-tla-read-trace` now requires three passes over each real execution:
 consensus conformance, read/application conformance, and a linearization witness
-for its client history. Version 3 declares `application = "register-v1"`; older
-version-2 traces do not contain result evidence and are rejected rather than
-silently supplying default values. Regenerate them with the task. The existing
+for its client history. Version 4 declares `application = "register-v1"` and records independent proposal
+contexts; older version-2/3 read traces lack required evidence and are rejected
+rather than silently supplying default values. Regenerate them with the task. The existing
 version-1 consensus-only profile is unchanged.
 
 The test application is a single in-memory last-write-wins register, initially
@@ -17,11 +17,13 @@ cursor without changing the value. The driver acknowledges application through
 applying its command. A read callback samples the application's actual register
 and the actual applied cursor, not an expected value derived by the serializer.
 
-Writes use distinct nonempty UTF-8 values. For this restricted workload, that
-value also identifies the proposal tracker record: the caller correlates entries
-to requests by value, not by entry context. This is a test-driver convention, not
-a production recommendation or verification of Raftor's request-context path.
-Read contexts are separately unique. The driver supports eight reads and eight
+Writes use nonempty UTF-8 values, which may repeat. Every proposal has a fresh
+context (`write-1`, `write-2`, ...), passed to both `ProposalTracker.track` and
+`RawNode.propose`. Application completes the request using `entry.context`, never
+its data value. The proposal input, replicated/durable log context, tracker
+record and client-history ID retain that identity throughout validation. These
+are test-generated IDs, not a verification of Raftor's binary request-context
+Generator or incarnation/restart semantics. Read contexts are separately unique. The driver supports eight reads and eight
 writes, fixed three-voter membership, atomic MemoryStorage and no restart in
 these scenarios. Pending callbacks are retained, not synthesized as success or
 failure at the end.
@@ -36,7 +38,7 @@ captured index. The new overlapping read/write scenario exercises this distincti
 
 No production code is modified. This caller still does not run the production
 Raftor/ReadyProcessor loop, a concurrent application, WAL, or an external client.
-The results establish linearizability of the two recorded toy-register histories,
+The results establish linearizability of the three recorded toy-register histories,
 not all histories of raftz or arbitrary application semantics.
 
 ## History construction
@@ -112,10 +114,15 @@ runs never count as either positive or negative results.
 | --- | --- | --- | --- | --- |
 | Gate, batch, delayed apply, read-after-completed-write, overlapping write, unacknowledged isolated write | 278 | 9 | 8 / 1 | All three passes succeed; linearization witness found |
 | Isolated old leader, newer leader write/read, healing | 178 | 3 | 2 / 1 | All three passes succeed; linearization witness found |
+| Equal-valued writes with independent acknowledgments, then `same -> other -> same` | 261 | 7 | 7 / 0 | All three passes succeed; linearization witness found |
 
 The first scenario includes six successful reads, two successful writes and one
 pending write. The second includes a successful write/read and an old leader's
 uncompleted read. There is no fabricated completion for either pending operation.
+The third scenario applies only the first of two equal-valued writes and checks
+that only its callback fires. It then applies the second, changes the register
+to `other`, and writes `same` again under a fourth ID. All four write callbacks
+fire exactly once; three reads return the expected values.
 
 Eleven full-trace semantic mutations are rejected, including the three new cases:
 corrupt application state, wrong returned read value, and a write callback before
@@ -123,17 +130,24 @@ application. Two independently mutated histories (a future value and a stale val
 after a completed write) have no linearization; they exercise the third pass even
 though full-trace value corruption is normally caught by the second pass first.
 
-Seven additional TLC histories cover initial reads, overlapping orders with both
-successful and dead-end choices, optional pending writes, an impossible future
-pending write, unwritten values, stale reads and omission of pending reads. Four
-have witnesses; three complete exploration without one. The offline Python suite
-passes 95 tests, including exact verdict handling and history extraction. The
-shared Zig trace build passes 4/4 tests in Debug and ReleaseSafe; the default Zig
-suite passes 791/791 separately.
+Four additional identity mutations are rejected even where the data value stays
+the same: substitution of a proposal input ID, acknowledging the wrong write,
+a duplicate write callback and substitution of a committed log context. The
+contextual consensus profile records proposal context as an independent input;
+it never infers the submitted ID from the resulting log. The two callback
+mutations pass consensus but fail read/application conformance. Correct final
+values alone would not establish this request-correlation property.
 
-Remaining boundaries include exhaustive implementation scheduling, repeated write
-values with separate operation IDs, follower-forwarded reads, leases, membership
-changes, cancellation/restart semantics, real transports/storage, production-loop
-integration, and unbounded refinement/liveness proofs. The general-purpose history
-model can handle repeated values, but these concrete Zig scenarios deliberately
-do not exercise them.
+Eight additional TLC histories cover initial reads, overlapping orders with both
+successful and dead-end choices, optional pending writes, an impossible future
+pending write, unwritten values, stale reads, repeated values and omission of
+pending reads. Five have witnesses; three complete exploration without one.
+The offline Python suite passes 105 tests, including exact verdict handling,
+profile boundaries and identity-preserving history extraction. The shared Zig
+trace build passes 5/5 tests in Debug and ReleaseSafe; the default Zig suite
+passes 791/791 separately.
+
+Remaining boundaries include exhaustive implementation scheduling, empty writes,
+follower-forwarded reads, leases, membership changes, ID reuse/incarnations,
+cancellation/restart semantics, real transports/storage, production-loop
+integration, and unbounded refinement/liveness proofs.

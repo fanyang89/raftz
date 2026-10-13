@@ -122,7 +122,7 @@ The existing upstream baseline and real Zig trace gate were also rerun after the
 tool pin refresh: the one-node baseline retains 4,650 distinct states; three-node
 simulation retains 100 sampled traces / 10,769 states; both real traces pass, and
 all nine semantic plus five structural trace mutations are rejected. The combined
-Python runner/adapter suite now passes 95 tests. These checks do not turn this standalone
+Python runner/adapter suite now passes 105 tests. These checks do not turn this standalone
 ReadIndex design model into implementation trace validation.
 
 A separate [real read trace slice](read-trace.md) now checks actual RawNode

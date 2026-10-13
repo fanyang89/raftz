@@ -17,6 +17,7 @@ import check
 HEADER = dict(kind="header", version=1, voters=[1, 2, 3], pre_vote=False,
               check_quorum=False, transfer=False, read_index=False, snapshot=False,
               compaction=False, atomic_memory_storage=True, send_after_persist=True)
+CONTEXT_HEADER = dict(HEADER, version=2, proposal_contexts=True)
 EVENTS = {"init", "campaign", "propose", "beat", "receive", "ready", "persist",
           "advance", "release", "restart", "drop", "duplicate", "end"}
 MESSAGE_TYPES = {"request_vote": "RequestVoteRequest", "request_vote_response": "RequestVoteResponse",
@@ -85,7 +86,11 @@ def message(m):
 
 
 def observation(e):
-    fields(e, "kind seq node input value states pending network")
+    contextual = "proposal_context" in e
+    fields(e, "kind seq node input value states pending network" + (" proposal_context" if contextual else ""))
+    if contextual:
+        payload(e["proposal_context"])
+        require(bool(e["proposal_context"]) == (e["kind"] == "propose"), "Missing or unexpected proposal context")
     require(e["kind"] in EVENTS, "Unknown event")
     require(type(e["node"]) is int and e["node"] in ((0,) if e["kind"] in ("init", "end") else (1, 2, 3)), "Invalid event node")
     require(isinstance(e["states"], list) and len(e["states"]) == 3, "Expected three states")
@@ -121,7 +126,8 @@ def load(path):
     require(0 < len(data) <= 16_000_000 and data.endswith(b"\n"), "Empty, oversized or truncated trace")
     rows = [json.loads(line, object_pairs_hook=unique_object) for line in data.splitlines()]
     require(4 <= len(rows) <= 1002, "Unsupported event count")
-    require(key(rows[0]) == key(HEADER), "Unsupported or missing trace header")
+    contextual = key(rows[0]) == key(CONTEXT_HEADER)
+    require(contextual or key(rows[0]) == key(HEADER), "Unsupported or missing trace header")
     fields(rows[-1], "kind events")
     require(key(rows[-1]) == key(dict(kind="terminal", events=len(rows)-2)), "Missing or inconsistent terminal marker")
     events = rows[1:-1]
@@ -130,6 +136,7 @@ def load(path):
         require(type(e.get("seq")) is int and e["seq"] == i, "Missing or reordered sequence number")
         require((e["kind"] == "init") == (i == 0), "Unexpected init")
         require((e["kind"] == "end") == (i == len(events)-1), "Unexpected end")
+        require(("proposal_context" in e) == contextual, "Proposal context profile mismatch")
         observation(e)
     require(any(e["kind"] == "campaign" for e in events) and any(e["kind"] == "propose" for e in events), "Vacuous trace")
     return events
@@ -155,7 +162,7 @@ def instructions(events):
             add("timeout", e)
             add("selfVote", e)
         elif kind == "propose":
-            add("client", e, value=dict(kind="command", data=payload(e["value"]), context=""))
+            add("client", e, value=dict(kind="command", data=payload(e["value"]), context=payload(e.get("proposal_context", ""))))
         elif kind == "receive":
             add("receive", e, msg=message(e["input"]))
             if before["role"] != "leader" and after["role"] == "leader":
@@ -250,7 +257,8 @@ def write_events(path, events):
     events = copy.deepcopy(events)
     for i, e in enumerate(events):
         e["seq"] = i
-    rows = [HEADER, *events, dict(kind="terminal", events=len(events))]
+    header = CONTEXT_HEADER if events and "proposal_context" in events[0] else HEADER
+    rows = [header, *events, dict(kind="terminal", events=len(events))]
     path.write_text("".join(json.dumps(e) + "\n" for e in rows))
 
 

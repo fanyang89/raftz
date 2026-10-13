@@ -39,7 +39,7 @@ fn message(allocator: std.mem.Allocator, m: raft.Message) !Message {
 
 const ReadResult = struct { context: []const u8, index: u64 };
 const CompletedRead = struct { context: []const u8, index: u64, value: []const u8 };
-const WriteResult = struct { value: []const u8, completed: usize };
+const WriteResult = struct { context: []const u8, value: []const u8, completed: usize };
 const Register = struct {
     value: []u8 = &.{},
 
@@ -70,6 +70,7 @@ const Register = struct {
     const vtable: raft.StateMachine.VTable = .{ .apply = applyImpl, .take_snapshot = takeSnapshot, .restore_snapshot = restoreSnapshot };
 };
 const WriteCapture = struct {
+    context: []u8,
     value: []const u8,
     node: *raft.RawNode,
     completed: usize = 0,
@@ -151,7 +152,7 @@ const Cluster = struct {
             node.* = try raft.RawNode.init(a, config(id), store.asStorage());
         }
         if (self.read_mode) {
-            try self.line(.{ .kind = "header", .version = 3, .application = "register-v1", .voters = .{ 1, 2, 3 }, .pre_vote = false, .check_quorum = false, .transfer = false, .read_index = true, .snapshot = false, .compaction = false, .atomic_memory_storage = true, .send_after_persist = true });
+            try self.line(.{ .kind = "header", .version = 4, .application = "register-v1", .voters = .{ 1, 2, 3 }, .pre_vote = false, .check_quorum = false, .transfer = false, .read_index = true, .snapshot = false, .compaction = false, .atomic_memory_storage = true, .send_after_persist = true });
         } else {
             try self.line(.{ .kind = "header", .version = 1, .voters = .{ 1, 2, 3 }, .pre_vote = false, .check_quorum = false, .transfer = false, .read_index = false, .snapshot = false, .compaction = false, .atomic_memory_storage = true, .send_after_persist = true });
         }
@@ -159,6 +160,7 @@ const Cluster = struct {
     }
 
     fn deinit(self: *Cluster) void {
+        for (self.writes[0..self.write_count]) |write| a.free(write.context);
         for (&self.machines) |*machine| machine.deinit();
         for (self.captures[0..self.capture_count]) |capture| a.free(capture.value);
         for (&self.trackers, &self.held_reads) |*tracker, *held| {
@@ -255,7 +257,7 @@ const Cluster = struct {
                 var completed: std.ArrayList(CompletedRead) = .empty;
                 var writes: std.ArrayList(WriteResult) = .empty;
                 for (self.writes[0..self.write_count]) |write| {
-                    if (write.node == node) try writes.append(alloc, .{ .value = write.value, .completed = write.completed });
+                    if (write.node == node) try writes.append(alloc, .{ .context = write.context, .value = write.value, .completed = write.completed });
                 }
                 for (self.captures[0..self.capture_count]) |capture| {
                     if (capture.node != node) continue;
@@ -264,7 +266,7 @@ const Cluster = struct {
                 }
                 out.* = .{ .waiting = waiting.items, .pending = pending_reads.items, .ready = ready.items, .tracked = tracked.items, .applied = r.raft_log.applied, .completed = completed.items, .value = self.machines[r.id - 1].value, .writes = writes.items };
             }
-            try self.line(.{ .kind = kind, .seq = self.seq, .node = id, .input = if (input) |m| try message(alloc, m) else null, .value = value, .states = states, .pending = pending.items, .network = network.items, .reads = reads });
+            try self.line(.{ .kind = kind, .seq = self.seq, .node = id, .input = if (input) |m| try message(alloc, m) else null, .value = value, .states = states, .pending = pending.items, .network = network.items, .reads = reads, .proposal_context = if (std.mem.eql(u8, kind, "propose")) self.writes[self.write_count - 1].context else "" });
         } else {
             try self.line(.{ .kind = kind, .seq = self.seq, .node = id, .input = if (input) |m| try message(alloc, m) else null, .value = value, .states = states, .pending = pending.items, .network = network.items });
         }
@@ -329,17 +331,17 @@ const Cluster = struct {
 
     fn propose(self: *Cluster, id: u64, value: []const u8) !void {
         if (value.len == 0) return error.EmptyProposal;
+        var context: []const u8 = "";
         if (self.read_mode) {
             if (self.write_count == self.writes.len) return error.WriteLimit;
-            for (self.writes[0..self.write_count]) |write| {
-                if (std.mem.eql(u8, write.value, value)) return error.DuplicateWriteValue;
-            }
+            const owned = try std.fmt.allocPrint(a, "write-{}", .{self.write_count + 1});
             const capture = &self.writes[self.write_count];
-            capture.* = .{ .value = value, .node = &self.nodes[id - 1] };
+            capture.* = .{ .context = owned, .value = value, .node = &self.nodes[id - 1] };
             self.write_count += 1;
-            try self.trackers[id - 1].track(value, .{ .ctx = capture, .function = WriteCapture.invoke }, 0, 0);
+            context = owned;
+            try self.trackers[id - 1].track(context, .{ .ctx = capture, .function = WriteCapture.invoke }, 0, 0);
         }
-        try self.nodes[id - 1].propose("", value);
+        try self.nodes[id - 1].propose(context, value);
         try self.observe("propose", id, null, value);
         try self.flush(id);
     }
@@ -375,7 +377,7 @@ const Cluster = struct {
                 var result = try machine.apply(entry);
                 defer result.deinit(a);
                 node.advanceApplyTo(entry.index);
-                self.trackers[id - 1].complete(entry.data, result.response orelse "");
+                self.trackers[id - 1].complete(entry.context, result.response orelse "");
             } else {
                 node.advanceApplyTo(entry.index);
             }
@@ -568,4 +570,45 @@ test "tla read trace: isolated old leader cannot confirm a fresh read" {
     try std.testing.expectEqualStrings("new-leader-write", c.captures[1].value);
     try std.testing.expectEqual(@as(usize, 1), c.writes[0].completed);
     try c.finish(".cache/tla/read-partition.ndjson", 3);
+}
+
+test "tla read trace: repeated write values retain independent request identities" {
+    var c = Cluster{ .read_mode = true };
+    try c.init();
+    defer c.deinit();
+    errdefer c.save(".cache/tla/read-repeated.failed.ndjson") catch {};
+    try c.campaign(1);
+    try c.drain();
+    try c.propose(1, "same");
+    try c.drain();
+    try c.propose(1, "same");
+    try c.drain();
+    try c.apply(1, 2);
+    try std.testing.expectEqual(@as(usize, 1), c.writes[0].completed);
+    try std.testing.expectEqual(@as(usize, 0), c.writes[1].completed);
+    try std.testing.expect(!std.mem.eql(u8, c.writes[0].context, c.writes[1].context));
+    try c.readIndex(1, "equal-writes");
+    try c.drain();
+    try c.completeReads(1);
+    try std.testing.expectEqual(@as(usize, 0), c.captures[0].count);
+    try c.apply(1, 3);
+    try c.completeReads(1);
+    try std.testing.expectEqual(@as(usize, 1), c.writes[1].completed);
+    try std.testing.expectEqualStrings("same", c.captures[0].value);
+    try c.propose(1, "other");
+    try c.drain();
+    try c.apply(1, 4);
+    try c.readIndex(1, "middle");
+    try c.drain();
+    try c.completeReads(1);
+    try std.testing.expectEqualStrings("other", c.captures[1].value);
+    try c.propose(1, "same");
+    try c.drain();
+    try c.apply(1, 5);
+    try c.readIndex(1, "returned");
+    try c.drain();
+    try c.completeReads(1);
+    try std.testing.expectEqualStrings("same", c.captures[2].value);
+    for (c.writes[0..4]) |write| try std.testing.expectEqual(@as(usize, 1), write.completed);
+    try c.finish(".cache/tla/read-repeated.ndjson", 5);
 }

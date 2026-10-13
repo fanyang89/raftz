@@ -27,7 +27,8 @@ def read():
 def event(kind, seq, value="", completed=None, writes=None, node=1):
     states = [dict(completed=[], writes=[]) for _ in range(3)]
     states[node-1] = dict(completed=completed or [], writes=writes or [])
-    return dict(kind=kind, seq=seq, node=node, value=value, reads=states)
+    return dict(kind=kind, seq=seq, node=node, value=value, reads=states,
+                proposal_context=value if kind == "propose" else "")
 
 
 class HistoryTests(unittest.TestCase):
@@ -101,10 +102,10 @@ class HistoryTests(unittest.TestCase):
 
     def test_extract_keeps_pending_operations_and_actual_results(self):
         events = [event("propose", 0, "A"), event("read", 1, "r"),
-                  event("apply", 2, writes=[dict(value="A", completed=1)]),
+                  event("apply", 2, writes=[dict(context="A", value="A", completed=1)]),
                   event("complete_reads", 3, completed=[dict(context="r", index=1, value="A")],
-                        writes=[dict(value="A", completed=1)]), event("propose", 4, "pending",
-                        completed=[dict(context="r", index=1, value="A")], writes=[dict(value="A", completed=1)])]
+                        writes=[dict(context="A", value="A", completed=1)]), event("propose", 4, "pending",
+                        completed=[dict(context="r", index=1, value="A")], writes=[dict(context="A", value="A", completed=1)])]
         operations = history.extract(events)
         self.assertEqual([op["returned"] for op in operations], [2, 3, -1])
         self.assertEqual(operations[1]["result"], "A".encode().hex())
@@ -113,6 +114,24 @@ class HistoryTests(unittest.TestCase):
     def test_apply_without_write_callback_does_not_acknowledge_write(self):
         operations = history.extract([event("propose", 0, "A"), event("apply", 1)])
         self.assertEqual(operations[0]["returned"], -1)
+
+    def test_equal_values_are_not_merged_and_callbacks_use_identity(self):
+        first, second = event("propose", 0, "same"), event("propose", 1, "same")
+        first["proposal_context"], second["proposal_context"] = "a", "b"
+        applied = event("apply", 2, writes=[dict(context="a", value="same", completed=1),
+                                           dict(context="b", value="same", completed=0)])
+        operations = history.extract([first, second, applied])
+        self.assertEqual(len(operations), 2)
+        self.assertEqual([op["returned"] for op in operations], [2, -1])
+        self.assertEqual(operations[0]["value"], operations[1]["value"])
+        self.assertNotEqual(operations[0]["id"], operations[1]["id"])
+        history.validate_history(operations)
+
+    def test_unknown_write_identity_cannot_match_by_value(self):
+        proposal = event("propose", 0, "same")
+        proposal["proposal_context"] = "a"
+        with self.assertRaisesRegex(ValueError, "Unknown completion"):
+            history.extract([proposal, event("apply", 1, writes=[dict(context="b", value="same", completed=1)])])
 
     def test_wrong_completion_owner_rejected(self):
         with self.assertRaises(ValueError):

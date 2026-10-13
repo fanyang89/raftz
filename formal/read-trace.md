@@ -8,10 +8,11 @@ mise run test-tla-read-trace
 
 # Validate already-generated executions:
 PYTHONDONTWRITEBYTECODE=1 python3 formal/read_trace_check.py \
-  .cache/tla/read-batch.ndjson .cache/tla/read-partition.ndjson --negatives
+  .cache/tla/read-batch.ndjson .cache/tla/read-partition.ndjson .cache/tla/read-repeated.ndjson \
+  --negatives --identity-negatives .cache/tla/read-repeated.ndjson
 ```
 
-This checks two recorded executions of real `RawNode`, `ReadOnly`, `MemoryStorage`,
+This checks three recorded executions of real `RawNode`, `ReadOnly`, `MemoryStorage`,
 `ProposalTracker`, and a test register `StateMachine`. It extends the
 [consensus trace driver](trace.md), not production code. It is distinct from the exhaustive, conditional
 [ReadIndex design model](read-index.md): the trace adapter checks concrete
@@ -22,7 +23,7 @@ The fixed three-voter profile retains atomic MemoryStorage persistence, messages
 released only after persistence, disabled PreVote/check-quorum, no membership
 changes, snapshots, compaction, restart or RPC. Reads are local to a leader,
 Safe-only, and have globally fresh nonempty UTF-8 contexts. `read_mode` explicitly
-selects version 3 of the trace schema with `application = "register-v1"`;
+selects version 4 of the trace schema with `application = "register-v1"`;
 the existing version-1 consensus profile still rejects contexts and read fields.
 
 Unlike the original driver, read scenarios call `advanceAppend` without claiming
@@ -43,14 +44,16 @@ Raftor's cancellation behavior.
 
 ## Three mandatory checks of the same complete execution
 
-`read_trace_check.py` validates every version-3 field and retains all observations.
+`read_trace_check.py` validates every version-4 field and retains all observations.
 All three checks below must pass; there is no option to skip consensus or history.
 
 1. **Consensus projection.** Remove only the additional read snapshots and
    heartbeat contexts. Map `read` to a heartbeat-generating operation and
    `read_ready`/`apply`/`complete_reads` to consensus stutters. Keep every event's
    sequence number, node, full term/vote/role/log/durable state and full consensus
-   message bags. Run the existing `RaftzTrace` adapter with all eight invariants.
+   message bags. Use the contextual consensus profile (version 2,
+   `proposal_contexts = true`) so each proposal's recorded input context is bound
+   to `ClientRequest`, rather than inferred from the observed resulting entries. Run the existing `RaftzTrace` adapter with all eight invariants.
    It must justify each heartbeat, commit and role change through model actions;
    the read adapter cannot invent consensus transitions.
 2. **Read protocol.** `RaftzReadTrace` consumes all the original observations.
@@ -128,10 +131,12 @@ Checked with Zig 0.16.0, the existing pinned TLC jars and OpenJDK 25:
 | --- | --- | --- | --- |
 | Postponement, batch release, duplication, delayed apply, completed/overlapping writes, pending write | 278 | 548 / 547 | 280 / 279 |
 | Isolated old leader, newer leader write, unconfirmed old read, healing/reset, new leader read | 178 | 364 / 363 | 180 / 179 |
+| Equal-valued writes, separate acknowledgments, and `same -> other -> same` | 261 | 521 / 520 | 263 / 262 |
 
-Both complete: the first issues six reads and completes all six, acknowledges
+All three complete: the first issues six reads and completes all six, acknowledges
 two writes and leaves one write pending; the second issues two reads and
-completes only the new leader's read, alongside one successful write. The batch scenario
+completes only the new leader's read, alongside one successful write. The third
+completes four independently identified writes and three reads. The batch scenario
 releases `batch-first` using the quorum for `batch-last` before delivering any
 heartbeat for `batch-first`. Completion is attempted while applied lags and
 succeeds only after explicit application advancement. A duplicated response and
@@ -142,8 +147,10 @@ forged ACK, wrong heartbeat context, wrong tracker index, early callback,
 duplicate callback, apply beyond commit, the heartbeat commit discrepancy,
 corrupt register state, wrong returned value and early write completion.
 Consensus rejects the heartbeat discrepancy; the read/application model rejects
-the other ten. Two history mutations and seven dedicated history regressions
-exercise the third pass independently. Malformed-input regressions cover profile mismatch,
+the other ten. Four additional identity mutations reject proposal/log context
+substitution, wrong-write acknowledgment and duplicate write acknowledgment.
+Two history mutations and eight dedicated history regressions exercise the
+third pass independently. Malformed-input regressions cover profile mismatch,
 unknown fields/events, missing terminal, appended suffix, reordered numbering,
 duplicate JSON keys, malformed contexts/ACKs/indices and truncated lines.
 
@@ -157,8 +164,8 @@ not the conformance pass/fail convention; see its [verdict rules](register-histo
 There are no state constraints, simulation or ignored trace suffixes. Only the
 fully consumed conformance terminal state has an intentional self-loop.
 
-The task also runs 95 Python tests. The default Zig suite passes 791/791 tests;
-the separate trace build now executes four scenarios. Existing consensus traces,
+The task also runs 105 Python tests. The default Zig suite passes 791/791 tests;
+the separate trace build now executes five scenarios. Existing consensus traces,
 9 semantic/5 structural negatives, and the upstream baseline are retained.
 Artifacts live under `.cache/tla/read-*.ndjson`, `read-mutations-*/`, and
 `runs/read-trace-*/`; each read run records its input, projection, steps, model,
@@ -167,5 +174,5 @@ config, command, log, state files and pointers to consensus/history artifacts.
 Remaining work includes broader application histories and production integration,
 follower-forwarded reads, stale responses across terms, cancellations, context reuse/incarnations,
 leases and joint consensus, production scheduling, partial durability and
-unbounded refinement/liveness proofs. Passing these two executions establishes
+unbounded refinement/liveness proofs. Passing these three executions establishes
 none of those broader claims.

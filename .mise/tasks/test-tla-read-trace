@@ -7,5 +7,6 @@ cd "$root"
 mkdir -p .cache/tla
 zig build test-tla-trace --summary all
 PYTHONDONTWRITEBYTECODE=1 python3 formal/read_trace_check.py \
-  .cache/tla/read-batch.ndjson .cache/tla/read-partition.ndjson --negatives "$@"
+  .cache/tla/read-batch.ndjson .cache/tla/read-partition.ndjson .cache/tla/read-repeated.ndjson \
+  --negatives --identity-negatives .cache/tla/read-repeated.ndjson "$@"
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s formal -p 'test_*.py'

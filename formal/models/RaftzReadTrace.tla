@@ -30,7 +30,7 @@ Reset(s, e) == [n \in Nodes |->
 
 Invoke(s, e) ==
     IF e.kind = "propose" THEN [s EXCEPT
-        ![e.node].writes = Append(@, [value |-> e.command, completed |-> 0])]
+        ![e.node].writes = Append(@, [context |-> e.command_context, value |-> e.command, completed |-> 0])]
     ELSE IF e.kind # "read" THEN s
     ELSE [s EXCEPT
         ![e.node].waiting = Append(@, e.context),
@@ -83,14 +83,14 @@ Complete(s, n) ==
 Apply(s, e) ==
     LET n == e.node
         indices == {k \in (s[n].applied+1)..e.target : e.after[n].log[k].data # ""}
-        commands == {e.after[n].log[k].data : k \in indices}
+        contexts == {e.after[n].log[k].context : k \in indices}
         value == IF indices = {} THEN s[n].value
                  ELSE e.after[n].log[CHOOSE k \in indices : \A j \in indices : k >= j].data
     IN [s EXCEPT
         ![n].applied = e.target,
         ![n].value = value,
         ![n].writes = [k \in DOMAIN s[n].writes |->
-            IF s[n].writes[k].value \in commands
+            IF s[n].writes[k].context \in contexts
             THEN [s[n].writes[k] EXCEPT !.completed = 1] ELSE s[n].writes[k]]]
 
 ReadStep(e) ==
@@ -134,7 +134,7 @@ EnabledEvent(e) ==
     /\ IF e.kind = "read"
        THEN e.after[e.node].role = "leader" /\ e.context \notin DOMAIN fences ELSE TRUE
     /\ IF e.kind = "propose"
-       THEN \A n \in Nodes : \A w \in SeqSet(reads[n].writes) : w.value # e.command ELSE TRUE
+       THEN \A n \in Nodes : \A w \in SeqSet(reads[n].writes) : w.context # e.command_context ELSE TRUE
     /\ IF e.kind = "apply"
        THEN reads[e.node].applied < e.target
             /\ e.target <= e.after[e.node].commit

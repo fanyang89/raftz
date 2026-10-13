@@ -14,7 +14,7 @@ import check
 import history_check
 import trace_check as core
 
-HEADER = dict(core.HEADER, version=3, read_index=True, application="register-v1")
+HEADER = dict(core.HEADER, version=4, read_index=True, application="register-v1")
 READ_EVENTS = {"read", "read_ready", "apply", "complete_reads"}
 
 
@@ -36,9 +36,9 @@ def read_state(state):
                pending=[], ready=[], tracked=[], applied=state["applied"], completed=[],
                value=core.payload(state["value"]), writes=[])
     for write in bounded_list(state["writes"]):
-        core.fields(write, "value completed")
+        core.fields(write, "context value completed")
         core.natural(write["completed"], 16)
-        out["writes"].append(dict(value=context(write["value"]), completed=write["completed"]))
+        out["writes"].append(dict(context=context(write["context"]), value=context(write["value"]), completed=write["completed"]))
     for field in ("pending", "ready", "tracked", "completed"):
         for item in bounded_list(state[field]):
             core.fields(item, "context index acks" if field == "pending" else
@@ -97,7 +97,7 @@ def load(path):
     events = rows[1:-1]
     core.require(events[0]["kind"] == "init" and events[-1]["kind"] == "end", "Missing init/end")
     for i, event in enumerate(events):
-        core.fields(event, "kind seq node input value states pending network reads")
+        core.fields(event, "kind seq node input value states pending network reads proposal_context")
         core.require(type(event["seq"]) is int and event["seq"] == i, "Invalid sequence")
         core.require((event["kind"] == "init") == (i == 0), "Unexpected init")
         core.require((event["kind"] == "end") == (i == len(events)-1), "Unexpected end")
@@ -141,6 +141,7 @@ def instructions(events):
             has_packet=event["input"] is not None and packet(event["input"]) is not None,
             context=context(event["value"]) if event["kind"] == "read" else "",
             command=core.payload(event["value"]) if event["kind"] == "propose" else "",
+            command_context=core.payload(event["proposal_context"]),
             target=int(event["value"]) if event["kind"] == "apply" else 0,
             packet=(packet(event["input"]) or "") if event["input"] is not None else "",
             before=environment(events[max(0, i-1)]["states"]), after=environment(event["states"]),
@@ -255,11 +256,54 @@ def negatives(path, timeout):
     print(f"Read negative fixtures: {directory}; {len(names)} semantic mutations rejected", flush=True)
 
 
+
+def identity_negatives(path, timeout):
+    events = load(path)
+    proposals = [e for e in events if e["kind"] == "propose"]
+    pair = next(((a, b) for i, a in enumerate(proposals) for b in proposals[i+1:]
+                 if a["value"] == b["value"] and a["proposal_context"] != b["proposal_context"]), None)
+    core.require(pair is not None, "Identity regressions require equal values with distinct proposal contexts")
+    first, second = pair
+    first_id, second_id = first["proposal_context"], second["proposal_context"]
+    directory = Path(tempfile.mkdtemp(prefix="identity-mutations-", dir=check.CACHE))
+    names = ("proposal-id-substitution", "wrong-write-callback", "duplicate-write-callback", "log-context-substitution")
+    for name in names:
+        changed = copy.deepcopy(events)
+        if name == "proposal-id-substitution":
+            changed[second["seq"]]["proposal_context"] = first_id
+        elif name == "wrong-write-callback":
+            for e in changed:
+                writes = {w["context"]: w for w in e["reads"][first["node"]-1]["writes"]}
+                if e["kind"] == "apply" and first_id in writes and second_id in writes:
+                    if writes[first_id]["completed"] == 1 and writes[second_id]["completed"] == 0:
+                        writes[first_id]["completed"] = 0
+                        writes[second_id]["completed"] = 1
+                        break
+            else:
+                raise RuntimeError("Missing independent write completion boundary")
+        elif name == "duplicate-write-callback":
+            write = next(w for w in changed[-1]["reads"][first["node"]-1]["writes"] if w["context"] == first_id)
+            write["completed"] = 2
+        else:
+            entry = next(e for e in changed[-1]["states"][first["node"]-1]["log"] if e["context"] == second_id)
+            entry["context"] = first_id
+        target = directory / f"{name}.ndjson"
+        write_events(target, changed)
+        try:
+            validate(target, timeout)
+        except core.ConformanceError:
+            print(f"PASS identity semantic negative: {name}", flush=True)
+        else:
+            raise RuntimeError(f"Identity mutation unexpectedly accepted: {name}")
+    print(f"Identity negative fixtures: {directory}; {len(names)} mutations rejected", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="+", type=Path)
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--negatives", action="store_true")
+    parser.add_argument("--identity-negatives", type=Path, help="Trace with equal-valued writes and independent completions")
     args = parser.parse_args()
     core.require(args.timeout > 0, "Timeout must be positive")
     check.verify_upstream()
@@ -267,6 +311,10 @@ def main():
         validate(path, args.timeout)
     if args.negatives:
         negatives(args.paths[0], args.timeout)
+    if args.identity_negatives:
+        if args.identity_negatives not in args.paths:
+            validate(args.identity_negatives, args.timeout)
+        identity_negatives(args.identity_negatives, args.timeout)
 
 
 if __name__ == "__main__":
