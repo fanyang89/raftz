@@ -2,6 +2,7 @@
 """Find a linearization of a finite register history with TLC (existential reachability)."""
 
 import argparse
+import copy
 import json
 from pathlib import Path
 import re
@@ -88,6 +89,76 @@ def verdict(returncode, text, completed):
     raise RuntimeError("TLC did not produce an exact linearization witness or finish excluding all linearizations")
 
 
+def replay(operations, order):
+    validate_history(operations)
+    core.require(isinstance(order, list) and len(order) <= len(operations)
+                 and all(isinstance(identity, str) for identity in order), "Invalid linearization order")
+    by_id = {op["id"]: op for op in operations}
+    done, values = set(), [""]
+    for identity in order:
+        core.require(identity in by_id and identity not in done, "Unknown or repeated witness operation")
+        op = by_id[identity]
+        core.require(op["returned"] >= 0 or op["kind"] == "write", "Pending read in witness")
+        core.require(all(other["id"] in done for other in operations
+                         if 0 <= other["returned"] < op["invoked"]), "Witness violates real-time precedence")
+        if op["kind"] == "read":
+            core.require(op["result"] == values[-1], "Witness read does not match register value")
+        values.append(op["value"] if op["kind"] == "write" else values[-1])
+        done.add(identity)
+    core.require(all(op["id"] in done for op in operations if op["returned"] >= 0),
+                 "Witness omits a completed operation")
+    return dict(version=1, order=list(order), values=values,
+                omitted=[op["id"] for op in operations if op["id"] not in done])
+
+
+def verify_witness(operations, path):
+    validate_history(operations)
+    data = path.read_bytes()
+    core.require(0 < len(data) <= 4_000_000, "Empty or oversized witness")
+    raw = json.loads(data, object_pairs_hook=core.unique_object)
+    core.fields(raw, "counterexample vars")
+    core.require(raw["vars"] == ["done", "value"], "Unexpected witness variables")
+    trace = raw["counterexample"]
+    core.fields(trace, "state action")
+    states, actions = trace["state"], trace["action"]
+    core.require(isinstance(states, list) and 2 <= len(states) <= len(operations) + 1,
+                 "Invalid witness state count")
+    core.require(isinstance(actions, list) and len(actions) == len(states) - 1,
+                 "Missing witness transitions")
+    previous, order, values = set(), [], []
+    for position, state in enumerate(states, 1):
+        core.require(isinstance(state, list) and len(state) == 2
+                     and type(state[0]) is int and state[0] == position, "Invalid witness state numbering")
+        core.fields(state[1], "done value")
+        selected = state[1]["done"]
+        core.require(isinstance(selected, list) and len(selected) <= len(operations)
+                     and all(type(i) is int and 1 <= i <= len(operations) for i in selected),
+                     "Invalid witness operation indices")
+        done = set(selected)
+        core.require(len(done) == len(selected), "Duplicate witness set member")
+        values.append(state[1]["value"])
+        if position == 1:
+            core.require(not done and values[-1] == "", "Invalid witness initial state")
+        else:
+            core.require(previous < done and len(done) == len(previous) + 1,
+                         "Witness transition must add exactly one operation")
+            index = (done - previous).pop()
+            order.append(operations[index - 1]["id"])
+            edge = actions[position - 2]
+            core.require(isinstance(edge, list) and len(edge) == 3
+                         and core.key(edge[0]) == core.key(states[position - 2])
+                         and core.key(edge[2]) == core.key(state), "Disconnected witness transition")
+            core.fields(edge[1], "name location context parameters")
+            core.fields(edge[1]["context"], "i")
+            core.require(edge[1]["name"] == "Linearize" and edge[1]["parameters"] == ["i"]
+                         and type(edge[1]["context"]["i"]) is int and edge[1]["context"]["i"] == index,
+                         "Witness action disagrees with selected operation")
+        previous = done
+    witness = replay(operations, order)
+    core.require(values == witness["values"], "TLC witness values disagree with independent replay")
+    return witness
+
+
 def check(operations, timeout=60):
     validate_history(operations)
     cp = tools.classpath()
@@ -99,6 +170,7 @@ def check(operations, timeout=60):
     (run / "RaftzRegisterHistory.cfg").write_text(
         "SPECIFICATION Spec\nINVARIANTS HistoryTypeInv NoLinearization\nCHECK_DEADLOCK FALSE\n")
     command = ["java", "-Xmx2g", "-XX:+UseParallelGC", "-cp", cp, "tlc2.TLC", "-workers", "1",
+               "-dumpTrace", "json", "witness.raw.json",
                "-metadir", str(run / "states"), "-config", "RaftzRegisterHistory.cfg", "RaftzRegisterHistory.tla"]
     (run / "command.json").write_text(json.dumps(command, indent=2) + "\n")
     print(f"Register history artifacts: {run}", flush=True)
@@ -109,8 +181,46 @@ def check(operations, timeout=60):
             raise RuntimeError(f"History TLC timeout, NOT a verdict: {run}") from error
     text = (run / "tlc.log").read_text()
     linearizable = verdict(process.returncode, text, sum(op["returned"] >= 0 for op in operations))
+    witness_path = run / "witness.raw.json"
+    if linearizable:
+        witness = verify_witness(operations, witness_path)
+        (run / "linearization.json").write_text(json.dumps(witness, indent=2) + "\n")
+    else:
+        core.require(not witness_path.exists(), "Unexpected witness artifact for an exhausted history")
     print(f"History {'has a linearization witness' if linearizable else 'has no linearization'}: {len(operations)} operations", flush=True)
     return linearizable, run
+
+
+def witness_negatives(operations, run):
+    raw = json.loads((run / "witness.raw.json").read_text())
+    witness = verify_witness(operations, run / "witness.raw.json")
+    directory = run / "witness-mutations"
+    directory.mkdir()
+    wrong_value, incomplete = copy.deepcopy(raw), copy.deepcopy(raw)
+    wrong_value["counterexample"]["state"][-1][1]["value"] = "unwritten"
+    wrong_value["counterexample"]["action"][-1][2][1]["value"] = "unwritten"
+    incomplete["counterexample"]["state"].pop()
+    incomplete["counterexample"]["action"].pop()
+    cases = (
+        ("wrong-register", wrong_value, "independent replay"),
+        ("missing-completion", incomplete, "omits a completed"),
+        ("reversed-realtime", list(reversed(witness["order"])), "real-time"),
+        ("duplicate-operation", witness["order"][:-1] + witness["order"][:1], "Unknown or repeated"),
+    )
+    for name, data, reason in cases:
+        path = directory / f"{name}.json"
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        try:
+            if isinstance(data, list):
+                replay(operations, data)
+            else:
+                verify_witness(operations, path)
+        except ValueError as error:
+            if reason not in str(error):
+                raise
+            print(f"PASS witness semantic negative: {name}", flush=True)
+        else:
+            raise RuntimeError(f"Witness mutation unexpectedly accepted: {name}")
 
 
 def regressions(timeout):
@@ -132,10 +242,12 @@ def regressions(timeout):
         "pending-read": (True, [op("w", "write", 0, 1, value="A"), op("r", "read", 2, -1)]),
     }
     for name, (expected, operations) in cases.items():
-        actual, _ = check(operations, timeout)
+        actual, run = check(operations, timeout)
         if actual != expected:
             raise RuntimeError(f"Unexpected register history verdict: {name}")
         print(f"PASS history regression: {name}", flush=True)
+        if name == "overlapping-orders":
+            witness_negatives(operations, run)
 
 
 def negatives(operations, timeout):

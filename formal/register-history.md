@@ -77,23 +77,57 @@ once; pending writes are optional, pending reads are not selected.
 
 The state stores only the selected set and register value. Different orderings
 with the same state merge, while TLC's behavior trace retains the witness order.
-With at most 16 operations this is a finite search; there are no state constraints
-or symmetry reductions. The test is existence of **one** valid sequential order,
+The checker exports that trace as JSON and independently replays its selected
+operation order in Python; it does not add an order variable to the model or
+disable state merging. With at most 16 operations this is a finite search;
+there are no state constraints or symmetry reductions. The test is existence of **one** valid sequential order,
 not correctness of every possible reordering.
 
 Accordingly, `NoLinearization` is an intentional anti-invariant: violating it
 means all completed operations have been legally selected. Success requires the
 exact invariant-violation exit code, exact invariant name, a concrete multi-state
 behavior and `RAFTZ_HISTORY_COMPLETE` with the correct completed-operation count.
-A tool error, a different invariant violation, missing marker or timeout is not a
-witness. TLC may stop as soon as it finds a witness; a positive verdict is not an
-exhaustion claim.
+Those log conditions are necessary but no longer sufficient: the exact run must
+also produce `witness.raw.json` via TLC's `-dumpTrace json` option and pass the
+independent replay below. A tool error, a different invariant violation, missing
+marker, missing/invalid artifact or timeout is not a witness. TLC may stop as soon
+as it finds a witness; a positive verdict is not an exhaustion claim.
 
 A negative verdict requires exit zero, completed exhaustive search, a final empty
-queue and no witness marker. Deadlock checking is disabled **only in this history
-search**: a bad ordering is a failed branch, not evidence that every ordering is
+queue, no witness marker and no contradictory witness artifact. Deadlock checking
+is disabled **only in this history search**: a bad ordering is a failed branch, not evidence that every ordering is
 bad. The consensus/read conformance passes retain deadlock checking. A history
 with no completed operations is rejected as vacuous before TLC runs.
+
+## Independent positive-witness replay
+
+`history_check.verify_witness` reads the actual TLC JSON counterexample to
+`NoLinearization`. It requires consecutive numbered states, an empty initial
+register/selected set, and transitions adding exactly one known operation.
+Each action must connect the corresponding states and name the same selected
+operation. Duplicate keys, unknown variables, disconnected edges, missing steps,
+stuttering, removed operations and out-of-range/boolean indices are rejected.
+Source-location annotations are diagnostic, not semantic evidence. Artifacts
+are bounded to 4 MB and at most 17 states for the existing 16-operation limit.
+
+The operation indices are mapped to original client IDs. A separate Python
+`replay` then checks that:
+
+- Every selected ID exists and occurs once; every completed operation is selected.
+- Pending writes may be included or omitted; pending reads must be omitted.
+- Every completed operation returning strictly before an operation's invocation
+  appears earlier in the order. Equal timestamps retain the model's overlap rule.
+- Starting with the empty register, each write replaces the value and each read
+  returns the current value.
+- Every TLC register value agrees with the independently computed prefix value.
+
+Only after these checks does the runner write `linearization.json`, containing
+`version`, named operation `order`, prefix `values` (including the initial empty
+value), and `omitted` pending operation IDs. Merely finding a success marker is
+insufficient. This is validation of a concrete positive certificate, not another
+exhaustive solver: negative verdicts still depend on TLC's completed search, and
+replay does not prove that history extraction or arbitrary raftz executions are
+correct. Consensus/read conformance remain mandatory for implementation traces.
 
 ## Commands, evidence and regression cases
 
@@ -107,8 +141,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 formal/history_check.py path/to/history.json
 The existing pinned jars, one worker, 2 GiB heap and 60-second per-pass timeout are
 reused. Each read run stores `history.json` and `history-run.txt`; the referenced
 `.cache/tla/runs/register-history-*/` stores the exact operation input, model,
-configuration, command, state files and TLC log/witness. Timeouts and incomplete
-runs never count as either positive or negative results.
+configuration, command, state files and TLC log. `witness.raw.json` retains any
+TLC candidate witness; `linearization.json` is written only after replay succeeds.
+Timeouts and incomplete runs never count as either positive or negative results.
 
 | Real scenario | Observations | Operations | Completed / pending | Result |
 | --- | --- | --- | --- | --- |
@@ -148,7 +183,12 @@ Eight additional TLC histories cover initial reads, overlapping orders with both
 successful and dead-end choices, optional pending writes, an impossible future
 pending write, unwritten values, stale reads, repeated values and omission of
 pending reads. Five have witnesses; three complete exploration without one.
-The offline Python suite passes 112 tests, including exact verdict handling,
+Four mutations of a real TLC witness/order are also rejected for their expected
+semantic reason: wrong register value, omitted completion, reversed real-time
+order and repeated operation ID. These fixtures are retained under the history
+run's `witness-mutations/` directory. The offline Python suite passes 132 tests,
+including malformed certificates, success logs without usable artifacts,
+contradictory negative artifacts, optional pending writes, exact verdict handling,
 profile boundaries and identity-preserving history extraction. The shared Zig
 trace build passes 6/6 tests in Debug and ReleaseSafe; the default Zig suite
 passes 791/791 separately.

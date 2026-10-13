@@ -123,7 +123,7 @@ Initial validation with the pinned tools and OpenJDK 25:
 | Three-node exhaustive check | Not completed as part of baseline validation |
 | Zig trace conformance | Two real executions pass; 9 semantic and 5 structural negatives rejected; see [trace results](trace.md) |
 | Safe ReadIndex design | Separate conditional model; 834,433 distinct three-voter states; see [bounds and negatives](read-index.md) |
-| Safe ReadIndex/register traces | Four real executions pass three checks; 18 trace/identity/stale-response and 2 history mutations rejected; see [scope and results](read-trace.md) |
+| Safe ReadIndex/register traces | Four real executions pass three checks; 18 trace/identity/stale-response, 2 history and 4 witness mutations rejected; see [scope and results](read-trace.md) |
 | TLAPS proof | Not implemented |
 
 These are baseline model results only. Neither bounded exploration nor sampled

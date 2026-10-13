@@ -118,8 +118,9 @@ consensus safety**. See the [mapping, assumptions, bounds and evidence](../forma
 `mise run test-tla-read-trace` additionally validates four real RawNode and
 ProposalTracker read/register executions. Every observation must pass the
 consensus adapter and a context/queue/ACK/apply/callback/application model, then
-the client history must have a linearization witness. Eighteen trace/identity/stale-response
-mutations and two history mutations are rejected. Independent proposal contexts
+the client history must have a linearization witness whose explicit operation
+order and register values also pass independent Python replay. Eighteen trace/identity/stale-response
+mutations, two history mutations and four witness/order mutations are rejected. Independent proposal contexts
 now bind repeated write values to the correct log entries, callbacks and history IDs. Integration exposed and corrected a local
 heartbeat adapter gap for a follower whose commit index starts at zero; imported source
 and production code are unchanged. See the [concrete mapping, results and

@@ -168,7 +168,9 @@ Three stale-response mutations reject crediting an old ACK to a fresh request,
 reviving the reset old request, and completing the new read without confirmation.
 All three preserve consensus and fail read/application conformance.
 Two history mutations and eight dedicated history regressions exercise the
-third pass independently. Malformed-input regressions cover profile mismatch,
+third pass independently. Positive history verdicts additionally require an
+independent replay of the exported TLC witness; four witness/order mutations
+are rejected. Malformed-input regressions cover profile mismatch,
 unknown fields/events, missing terminal, appended suffix, reordered numbering,
 duplicate JSON keys, malformed contexts/ACKs/indices and truncated lines.
 
@@ -182,7 +184,7 @@ not the conformance pass/fail convention; see its [verdict rules](register-histo
 There are no state constraints, simulation or ignored trace suffixes. Only the
 fully consumed conformance terminal state has an intentional self-loop.
 
-The task also runs 112 Python tests. The default Zig suite passes 791/791 tests;
+The task also runs 132 Python tests. The default Zig suite passes 791/791 tests;
 the separate trace build now executes six scenarios. Existing consensus traces,
 9 semantic/5 structural negatives, and the upstream baseline are retained.
 Artifacts live under `.cache/tla/read-*.ndjson`, `read-mutations-*/`, and
