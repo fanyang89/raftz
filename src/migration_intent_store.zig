@@ -117,8 +117,11 @@ pub const Store = struct {
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, suffix)) continue;
             if (intents.items.len >= max_intents) return error.GroupOperationBackpressure;
             const id_bytes = entry.name[0 .. entry.name.len - suffix.len];
+            if (id_bytes.len == 0 or id_bytes[0] == '0') return error.MigrationIntentCorrupt;
+            for (id_bytes) |byte| {
+                if (byte < '0' or byte > '9') return error.MigrationIntentCorrupt;
+            }
             const filename_group_id = std.fmt.parseInt(u64, id_bytes, 10) catch return error.MigrationIntentCorrupt;
-            if (filename_group_id == 0) return error.MigrationIntentCorrupt;
             const file_path = try self.intentPath(filename_group_id, suffix);
             defer self.allocator.free(file_path);
             var intent = try self.loadOne(file_path);
@@ -236,4 +239,76 @@ fn mapFsError(err: fs_mod.Error) Error {
         error.OutOfMemory => error.OutOfMemory,
         else => error.MigrationIntentIo,
     };
+}
+
+test "migration intent recovery rejects noncanonical filenames" {
+    const allocator = std.testing.allocator;
+    const invalid_names = [_][]const u8{
+        "01.intent",
+        "+1.intent",
+        "1_0.intent",
+        "0.intent",
+        ".intent",
+        "18446744073709551616.intent",
+    };
+    for (invalid_names) |name| {
+        var fixture = try @import("fs/testing.zig").FsFixture.init(allocator, .real);
+        defer fixture.deinit();
+        var store = try Store.init(allocator, fixture.root(), fixture.fs(), 128);
+        defer store.deinit();
+        for ([_]u64{ 1, 10 }) |group_id| {
+            try store.put(.{
+                .group_id = group_id,
+                .source_node_id = 1,
+                .target_node_id = 2,
+                .target_address = "node-2",
+                .timeout_ticks = 100,
+                .stable_catch_up_ticks = 1,
+            });
+        }
+        const path = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ store.dir, name }, 0);
+        defer allocator.free(path);
+        const handle = try store.fs.open(path, .write_truncate);
+        try store.fs.close(handle);
+
+        if (store.loadAll(10)) |intents| {
+            defer allocator.free(intents);
+            for (intents) |*intent| intent.deinit(allocator);
+            return error.TestUnexpectedResult;
+        } else |err| {
+            try std.testing.expectEqual(error.MigrationIntentCorrupt, err);
+        }
+    }
+}
+
+test "migration intent recovery sorts canonical ids and ignores temporary files" {
+    const allocator = std.testing.allocator;
+    var fixture = try @import("fs/testing.zig").FsFixture.init(allocator, .real);
+    defer fixture.deinit();
+    var store = try Store.init(allocator, fixture.root(), fixture.fs(), 128);
+    defer store.deinit();
+    const ids = [_]u64{ std.math.maxInt(u64), 10, 1 };
+    for (ids) |group_id| {
+        try store.put(.{
+            .group_id = group_id,
+            .source_node_id = 1,
+            .target_node_id = 2,
+            .target_address = "node-2",
+            .timeout_ticks = 100,
+            .stable_catch_up_ticks = 1,
+        });
+    }
+    const path = try store.intentPath(2, ".intent.tmp");
+    defer allocator.free(path);
+    const handle = try store.fs.open(path, .write_truncate);
+    try store.fs.close(handle);
+
+    const intents = try store.loadAll(ids.len);
+    defer allocator.free(intents);
+    defer for (intents) |*intent| intent.deinit(allocator);
+    try std.testing.expectEqual(ids.len, intents.len);
+    for (intents, 0..) |intent, i| {
+        try std.testing.expectEqual(ids[ids.len - 1 - i], intent.group_id);
+        try std.testing.expectEqualStrings("node-2", intent.target_address);
+    }
 }

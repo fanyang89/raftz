@@ -239,7 +239,10 @@ request is accepted. Each CRC-protected record is replaced atomically under
 `<data_dir>/migrations/<group_id>.intent`. Completion, cancellation, and timeout
 remove the record; shutdown preserves it. Damaged records fail Host startup as
 corruption, and records written by a newer raftz fail as `UnsupportedVersion`.
-Neither is silently ignored.
+Neither is silently ignored. Intent filenames must use the canonical nonzero
+unsigned decimal group ID, without leading zeros, signs, or separators;
+noncanonical `.intent` filenames also fail startup as corruption. Temporary
+`.intent.tmp` files left by interrupted writes are ignored during recovery.
 
 Callbacks and transient stages are not persisted. After restart, the application
 recreates the Group and calls `resumeReplicaMigration`; the workflow reloads the
