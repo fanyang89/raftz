@@ -8,11 +8,12 @@ mise run test-tla-read-trace
 
 # Validate already-generated executions:
 PYTHONDONTWRITEBYTECODE=1 python3 formal/read_trace_check.py \
-  .cache/tla/read-batch.ndjson .cache/tla/read-partition.ndjson .cache/tla/read-repeated.ndjson \
-  --negatives --identity-negatives .cache/tla/read-repeated.ndjson
+  .cache/tla/read-batch.ndjson .cache/tla/read-partition.ndjson .cache/tla/read-repeated.ndjson .cache/tla/read-stale.ndjson \
+  --negatives --identity-negatives .cache/tla/read-repeated.ndjson \
+  --stale-negatives .cache/tla/read-stale.ndjson
 ```
 
-This checks three recorded executions of real `RawNode`, `ReadOnly`, `MemoryStorage`,
+This checks four recorded executions of real `RawNode`, `ReadOnly`, `MemoryStorage`,
 `ProposalTracker`, and a test register `StateMachine`. It extends the
 [consensus trace driver](trace.md), not production code. It is distinct from the exhaustive, conditional
 [ReadIndex design model](read-index.md): the trace adapter checks concrete
@@ -132,8 +133,9 @@ Checked with Zig 0.16.0, the existing pinned TLC jars and OpenJDK 25:
 | Postponement, batch release, duplication, delayed apply, completed/overlapping writes, pending write | 278 | 548 / 547 | 280 / 279 |
 | Isolated old leader, newer leader write, unconfirmed old read, healing/reset, new leader read | 178 | 364 / 363 | 180 / 179 |
 | Equal-valued writes, separate acknowledgments, and `same -> other -> same` | 261 | 521 / 520 | 263 / 262 |
+| Retained old-term responses after stepdown and reelection; fresh read confirmation | 307 | 627 / 626 | 309 / 308 |
 
-All three complete: the first issues six reads and completes all six, acknowledges
+All four complete: the first issues six reads and completes all six, acknowledges
 two writes and leaves one write pending; the second issues two reads and
 completes only the new leader's read, alongside one successful write. The third
 completes four independently identified writes and three reads. The batch scenario
@@ -142,6 +144,19 @@ heartbeat for `batch-first`. Completion is attempted while applied lags and
 succeeds only after explicit application advancement. A duplicated response and
 late responses do not produce a second callback.
 
+The fourth scenario retains two copies of a real term-1 heartbeat response in
+both observed network bags while node 2 becomes leader in term 2. One copy is
+delivered after node 1 steps down; the other after node 1 wins term 3 and issues
+a fresh read. Neither copy revives the old request or confirms the new one.
+The new read completes only after fresh quorum responses, returning the value
+of a completed term-3 write. The old read remains pending in the client history.
+`Raft.step` rejects lower-term messages before role dispatch; `Raft.reset` clears
+`ReadOnly` and deferred reads. The existing models cover these boundaries without
+schema changes or weakened guards. This tests the combination of term/role checks,
+reset and fresh contexts, not the independent necessity of the term guard when
+contexts cannot repeat. Context reuse and arbitrary delay schedules remain outside
+this execution's claim.
+
 Eleven schema-valid semantic mutations are rejected: premature read state,
 forged ACK, wrong heartbeat context, wrong tracker index, early callback,
 duplicate callback, apply beyond commit, the heartbeat commit discrepancy,
@@ -149,6 +164,9 @@ corrupt register state, wrong returned value and early write completion.
 Consensus rejects the heartbeat discrepancy; the read/application model rejects
 the other ten. Four additional identity mutations reject proposal/log context
 substitution, wrong-write acknowledgment and duplicate write acknowledgment.
+Three stale-response mutations reject crediting an old ACK to a fresh request,
+reviving the reset old request, and completing the new read without confirmation.
+All three preserve consensus and fail read/application conformance.
 Two history mutations and eight dedicated history regressions exercise the
 third pass independently. Malformed-input regressions cover profile mismatch,
 unknown fields/events, missing terminal, appended suffix, reordered numbering,
@@ -164,15 +182,15 @@ not the conformance pass/fail convention; see its [verdict rules](register-histo
 There are no state constraints, simulation or ignored trace suffixes. Only the
 fully consumed conformance terminal state has an intentional self-loop.
 
-The task also runs 105 Python tests. The default Zig suite passes 791/791 tests;
-the separate trace build now executes five scenarios. Existing consensus traces,
+The task also runs 112 Python tests. The default Zig suite passes 791/791 tests;
+the separate trace build now executes six scenarios. Existing consensus traces,
 9 semantic/5 structural negatives, and the upstream baseline are retained.
 Artifacts live under `.cache/tla/read-*.ndjson`, `read-mutations-*/`, and
-`runs/read-trace-*/`; each read run records its input, projection, steps, model,
+`identity-mutations-*/`, `stale-mutations-*/`, and `runs/read-trace-*/`; each read run records its input, projection, steps, model,
 config, command, log, state files and pointers to consensus/history artifacts.
 
 Remaining work includes broader application histories and production integration,
-follower-forwarded reads, stale responses across terms, cancellations, context reuse/incarnations,
+follower-forwarded reads, arbitrary delayed-response schedules, cancellations, context reuse/incarnations,
 leases and joint consensus, production scheduling, partial durability and
-unbounded refinement/liveness proofs. Passing these three executions establishes
+unbounded refinement/liveness proofs. Passing these four executions establishes
 none of those broader claims.

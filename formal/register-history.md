@@ -38,7 +38,7 @@ captured index. The new overlapping read/write scenario exercises this distincti
 
 No production code is modified. This caller still does not run the production
 Raftor/ReadyProcessor loop, a concurrent application, WAL, or an external client.
-The results establish linearizability of the three recorded toy-register histories,
+The results establish linearizability of the four recorded toy-register histories,
 not all histories of raftz or arbitrary application semantics.
 
 ## History construction
@@ -115,6 +115,7 @@ runs never count as either positive or negative results.
 | Gate, batch, delayed apply, read-after-completed-write, overlapping write, unacknowledged isolated write | 278 | 9 | 8 / 1 | All three passes succeed; linearization witness found |
 | Isolated old leader, newer leader write/read, healing | 178 | 3 | 2 / 1 | All three passes succeed; linearization witness found |
 | Equal-valued writes with independent acknowledgments, then `same -> other -> same` | 261 | 7 | 7 / 0 | All three passes succeed; linearization witness found |
+| Delayed old-term responses after stepdown and reelection | 307 | 5 | 4 / 1 | All three passes succeed; linearization witness found |
 
 The first scenario includes six successful reads, two successful writes and one
 pending write. The second includes a successful write/read and an old leader's
@@ -122,7 +123,12 @@ uncompleted read. There is no fabricated completion for either pending operation
 The third scenario applies only the first of two equal-valued writes and checks
 that only its callback fires. It then applies the second, changes the register
 to `other`, and writes `same` again under a fourth ID. All four write callbacks
-fire exactly once; three reads return the expected values.
+fire exactly once; three reads return the expected values. The fourth scenario
+completes three writes and the new-term read, leaving the old-term read pending.
+A duplicated old response is delivered once after stepdown and once after
+reelection, without fabricating either read callback. Three additional trace
+mutations (old ACK credited to a new read, resurrection of the old request,
+unconfirmed new-read callback) pass consensus but fail read/application checking.
 
 Eleven full-trace semantic mutations are rejected, including the three new cases:
 corrupt application state, wrong returned read value, and a write callback before
@@ -142,9 +148,9 @@ Eight additional TLC histories cover initial reads, overlapping orders with both
 successful and dead-end choices, optional pending writes, an impossible future
 pending write, unwritten values, stale reads, repeated values and omission of
 pending reads. Five have witnesses; three complete exploration without one.
-The offline Python suite passes 105 tests, including exact verdict handling,
+The offline Python suite passes 112 tests, including exact verdict handling,
 profile boundaries and identity-preserving history extraction. The shared Zig
-trace build passes 5/5 tests in Debug and ReleaseSafe; the default Zig suite
+trace build passes 6/6 tests in Debug and ReleaseSafe; the default Zig suite
 passes 791/791 separately.
 
 Remaining boundaries include exhaustive implementation scheduling, empty writes,

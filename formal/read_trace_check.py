@@ -298,12 +298,61 @@ def identity_negatives(path, timeout):
     print(f"Identity negative fixtures: {directory}; {len(names)} mutations rejected", flush=True)
 
 
+def stale_boundary(events):
+    for i, e in enumerate(events):
+        if e["kind"] != "receive" or e["input"]["kind"] != "heartbeat_response":
+            continue
+        node = e["node"] - 1
+        message = e["input"]
+        if (e["states"][node]["role"] == "leader"
+                and message["term"] < e["states"][node]["term"]
+                and e["reads"][node]["pending"]):
+            pending = e["reads"][node]["pending"][0]
+            if message["context"] != pending["context"] and message["from"] not in pending["acks"]:
+                return i
+    raise ValueError("Stale regressions require an old-term response while a leader has a fresh pending read")
+
+
+def stale_negatives(path, timeout):
+    events = load(path)
+    boundary = stale_boundary(events)
+    directory = Path(tempfile.mkdtemp(prefix="stale-mutations-", dir=check.CACHE))
+    names = ("stale-ack", "revived-read", "unconfirmed-callback")
+    for name in names:
+        changed = copy.deepcopy(events)
+        e = changed[boundary]
+        node = e["node"] - 1
+        if name == "stale-ack":
+            e["reads"][node]["pending"][0]["acks"].append(e["input"]["from"])
+        elif name == "revived-read":
+            e["reads"][node]["ready"].append(dict(context=e["input"]["context"], index=e["states"][node]["commit"]))
+        else:
+            ctx = e["reads"][node]["pending"][0]["context"]
+            completion = next((x for x in changed[boundary+1:]
+                               if x["kind"] == "complete_reads" and x["node"] == e["node"]
+                               and any(t["context"] == ctx and t["index"] is None
+                                       for t in x["reads"][node]["tracked"])), None)
+            core.require(completion is not None, "Missing unconfirmed read-completion attempt after stale response")
+            completion["reads"][node]["completed"].append(dict(
+                context=ctx, index=completion["reads"][node]["applied"], value=completion["reads"][node]["value"]))
+        target = directory / f"{name}.ndjson"
+        write_events(target, changed)
+        try:
+            validate(target, timeout)
+        except core.ConformanceError:
+            print(f"PASS stale-response semantic negative: {name}", flush=True)
+        else:
+            raise RuntimeError(f"Stale-response mutation unexpectedly accepted: {name}")
+    print(f"Stale-response negative fixtures: {directory}; {len(names)} mutations rejected", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="+", type=Path)
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--negatives", action="store_true")
     parser.add_argument("--identity-negatives", type=Path, help="Trace with equal-valued writes and independent completions")
+    parser.add_argument("--stale-negatives", type=Path, help="Trace with an old-term response and a new pending read")
     args = parser.parse_args()
     core.require(args.timeout > 0, "Timeout must be positive")
     check.verify_upstream()
@@ -315,6 +364,10 @@ def main():
         if args.identity_negatives not in args.paths:
             validate(args.identity_negatives, args.timeout)
         identity_negatives(args.identity_negatives, args.timeout)
+    if args.stale_negatives:
+        if args.stale_negatives not in args.paths:
+            validate(args.stale_negatives, args.timeout)
+        stale_negatives(args.stale_negatives, args.timeout)
 
 
 if __name__ == "__main__":

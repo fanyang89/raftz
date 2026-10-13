@@ -412,11 +412,21 @@ const Cluster = struct {
     }
 
     fn drain(self: *Cluster) !void {
+        try self.drainExcept(null);
+    }
+
+    fn drainExcept(self: *Cluster, context: ?[]const u8) !void {
         var count: usize = 0;
-        while (self.network.items.len > 0) {
+        while (true) {
+            const next = for (self.network.items, 0..) |m, i| {
+                if (context) |ctx| {
+                    if (std.mem.eql(u8, m.context, ctx)) continue;
+                }
+                break i;
+            } else return;
             count += 1;
             if (count > 500) return error.DeliveryLimit;
-            try self.deliver(0);
+            try self.deliver(next);
         }
     }
 
@@ -611,4 +621,67 @@ test "tla read trace: repeated write values retain independent request identitie
     try std.testing.expectEqualStrings("same", c.captures[2].value);
     for (c.writes[0..4]) |write| try std.testing.expectEqual(@as(usize, 1), write.completed);
     try c.finish(".cache/tla/read-repeated.ndjson", 5);
+}
+
+test "tla read trace: delayed old-term responses survive elections without confirming new reads" {
+    var c = Cluster{ .read_mode = true };
+    try c.init();
+    defer c.deinit();
+    errdefer c.save(".cache/tla/read-stale.failed.ndjson") catch {};
+    try c.campaign(1);
+    try c.drain();
+    try c.propose(1, "before-change");
+    try c.drain();
+    try c.apply(1, 2);
+    try c.readIndex(1, "old-term");
+    try c.deliverMatching(.heartbeat, 1, 2, "old-term");
+    for (c.network.items, 0..) |m, i| {
+        if (m.msg_type == .heartbeat and m.to == 3 and std.mem.eql(u8, m.context, "old-term")) {
+            var dropped = c.network.orderedRemove(i);
+            defer dropped.deinit(a);
+            try c.observe("drop", dropped.to, dropped, "");
+            break;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), c.network.items.len);
+    try std.testing.expectEqual(raft.MessageType.heartbeat_response, c.network.items[0].msg_type);
+    try std.testing.expectEqual(@as(u64, 1), c.network.items[0].term);
+    const duplicate = try raft.cloneMessage(a, c.network.items[0]);
+    try c.network.append(a, duplicate);
+    try c.observe("duplicate", duplicate.to, duplicate, "");
+    c.isolated = 1;
+    try c.campaign(2);
+    try c.drainExcept("old-term");
+    try c.propose(2, "after-change");
+    try c.drainExcept("old-term");
+    try c.apply(2, 4);
+    c.isolated = 0;
+    try c.beat(2);
+    try c.drainExcept("old-term");
+    try std.testing.expectEqual(raft.StateRole.follower, c.nodes[0].raft.state);
+    try std.testing.expectEqual(@as(u64, 2), c.nodes[0].raft.term);
+    try std.testing.expectEqual(@as(usize, 0), c.nodes[0].raft.read_only.pendingReadCount());
+    try c.deliverMatching(.heartbeat_response, 2, 1, "old-term");
+    try c.completeReads(1);
+    try std.testing.expectEqual(@as(usize, 0), c.captures[0].count);
+    try c.campaign(1);
+    try c.drainExcept("old-term");
+    try std.testing.expectEqual(raft.StateRole.leader, c.nodes[0].raft.state);
+    try std.testing.expectEqual(@as(u64, 3), c.nodes[0].raft.term);
+    try c.propose(1, "current-value");
+    try c.drainExcept("old-term");
+    try c.apply(1, 6);
+    try c.readIndex(1, "new-term");
+    try c.deliverMatching(.heartbeat_response, 2, 1, "old-term");
+    const pending = c.nodes[0].raft.read_only.pending.getPtr("new-term").?;
+    try std.testing.expectEqual(@as(u32, 1), pending.acks.count());
+    try c.completeReads(1);
+    for (c.captures[0..2]) |capture| try std.testing.expectEqual(@as(usize, 0), capture.count);
+    try c.drain();
+    try c.completeReads(1);
+    try std.testing.expectEqual(@as(usize, 0), c.captures[0].count);
+    try std.testing.expectEqual(@as(usize, 1), c.captures[1].count);
+    try std.testing.expectEqualStrings("current-value", c.captures[1].value);
+    for (c.writes[0..3]) |write| try std.testing.expectEqual(@as(usize, 1), write.completed);
+    try c.finish(".cache/tla/read-stale.ndjson", 6);
 }

@@ -115,10 +115,10 @@ witnesses establish that these paths are reachable.
 The standalone model checks prefix freshness and the apply barrier **assuming
 consensus safety**. See the [mapping, assumptions, bounds and evidence](../formal/read-index.md).
 
-`mise run test-tla-read-trace` additionally validates three real RawNode and
+`mise run test-tla-read-trace` additionally validates four real RawNode and
 ProposalTracker read/register executions. Every observation must pass the
 consensus adapter and a context/queue/ACK/apply/callback/application model, then
-the client history must have a linearization witness. Fifteen trace/identity
+the client history must have a linearization witness. Eighteen trace/identity/stale-response
 mutations and two history mutations are rejected. Independent proposal contexts
 now bind repeated write values to the correct log entries, callbacks and history IDs. Integration exposed and corrected a local
 heartbeat adapter gap for a follower whose commit index starts at zero; imported source
@@ -127,8 +127,9 @@ remaining boundaries](../formal/read-trace.md).
 
 The trace driver now executes a small register state machine and records actual
 write acknowledgments and read values. [Finite-history linearizability](../formal/register-history.md)
-is checked for these three executions, including overlapping and pending
-operations and equal-valued writes with independent acknowledgments.
+is checked for these four executions, including overlapping and pending
+operations, equal-valued writes with independent acknowledgments, and delayed
+old-term responses across stepdown and reelection.
 This is not an exhaustive implementation check, production-loop conformance or
 an unbounded linearizability proof.
 

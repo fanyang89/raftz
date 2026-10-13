@@ -84,6 +84,59 @@ class ReadTraceTests(unittest.TestCase):
         self.assertEqual(writes[0]["value"], writes[1]["value"])
         self.assertNotEqual(writes[0]["context"], writes[1]["context"])
 
+    def stale_event(self):
+        e = observation("receive", 0, 1)
+        e["input"] = dict(heartbeat("old"), kind="heartbeat_response", **{"from": 2, "to": 1})
+        e["states"][0].update(role="leader", term=3)
+        e["reads"][0]["pending"] = [dict(context="new", index=2, acks=[1])]
+        return e
+
+    def test_stale_boundary_selects_only_sensitive_leader_observation(self):
+        e = self.stale_event()
+        self.assertEqual(trace.stale_boundary([e]), 0)
+        step = trace.instructions([e])[0]
+        self.assertEqual(step["packet"]["term"], 1)
+        self.assertEqual(step["after"][0]["term"], 3)
+        self.assertEqual(step["packet"]["context"], "old".encode().hex())
+
+    def test_current_term_reply_is_not_stale_evidence(self):
+        e = self.stale_event()
+        e["input"]["term"] = 3
+        with self.assertRaises(ValueError):
+            trace.stale_boundary([e])
+
+    def test_follower_reply_is_not_fresh_leader_evidence(self):
+        e = self.stale_event()
+        e["states"][0]["role"] = "follower"
+        with self.assertRaises(ValueError):
+            trace.stale_boundary([e])
+
+    def test_missing_pending_read_is_not_stale_evidence(self):
+        e = self.stale_event()
+        e["reads"][0]["pending"] = []
+        with self.assertRaises(ValueError):
+            trace.stale_boundary([e])
+
+    def test_reused_context_is_outside_stale_regression_profile(self):
+        e = self.stale_event()
+        e["reads"][0]["pending"][0]["context"] = "old"
+        with self.assertRaises(ValueError):
+            trace.stale_boundary([e])
+
+    def test_existing_ack_cannot_be_a_noop_mutation(self):
+        e = self.stale_event()
+        e["reads"][0]["pending"][0]["acks"] = [1, 2]
+        with self.assertRaises(ValueError):
+            trace.stale_boundary([e])
+
+    def test_retained_response_copies_keep_original_term_and_multiplicity(self):
+        e = self.stale_event()
+        e["network"] = [copy.deepcopy(e["input"]), copy.deepcopy(e["input"])]
+        packets = trace.instructions([e])[0]["network"]
+        self.assertEqual(len(packets), 2)
+        self.assertEqual(packets[0], packets[1])
+        self.assertEqual(packets[0]["term"], 1)
+
     def test_legacy_header_cannot_enable_reads(self):
         self.rejects(lambda rows: rows[0].update(version=1, read_index=False))
 
