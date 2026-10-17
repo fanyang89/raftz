@@ -1,8 +1,6 @@
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("crc32c/crc32c.h");
-});
+const c = @import("crc32c_bindings");
 
 pub fn extend(crc: u32, bytes: []const u8) u32 {
     return c.crc32c_extend(crc, bytes.ptr, bytes.len);

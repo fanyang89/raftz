@@ -560,7 +560,7 @@ test "raft state clone is deep" {
             .learners = try allocator.dupe(u64, &.{4}),
         },
         .cluster_membership = .{
-            .cluster_id = .{1} ++ .{0} ** 15,
+            .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
             .peers = try allocator.dupe(@import("cluster_membership.zig").PeerEndpoint, &.{
                 .{ .node_id = 1, .address = try allocator.dupe(u8, "node-1") },
             }),
@@ -658,7 +658,7 @@ test "clone helpers clean up allocation failures" {
             var state = RaftState{
                 .conf_state = .{ .voters = @constCast(&[_]u64{ 1, 2 }) },
                 .cluster_membership = .{
-                    .cluster_id = .{1} ++ .{0} ** 15,
+                    .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
                     .peers = @constCast(&[_]@import("cluster_membership.zig").PeerEndpoint{
                         .{ .node_id = 1, .address = @constCast("node-1") },
                         .{ .node_id = 2, .address = @constCast("node-2") },

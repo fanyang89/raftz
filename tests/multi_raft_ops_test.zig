@@ -37,7 +37,7 @@ test "multi raft ops: report renders host, groups, and migrations" {
     defer machine.deinit();
     const peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
     var config = groupConfig(701, 1, &peers);
-    config.raftor.cluster_id = [_]u8{0x71} ** 16;
+    config.raftor.cluster_id = @as([16]u8, @splat(0x71));
     try host.addGroup(config, machine.stateMachine());
     try host.campaign(701);
     for (0..10) |_| _ = try host.tick();
@@ -78,7 +78,7 @@ test "multi raft ops: future migration intent version fails as unsupported" {
     defer fixture.deinit();
     const initial_peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
     var config = groupConfig(702, 1, &initial_peers);
-    config.raftor.cluster_id = [_]u8{0x72} ** 16;
+    config.raftor.cluster_id = @as([16]u8, @splat(0x72));
     {
         const network = try raft.LoopbackMultiNetwork.create(allocator);
         defer network.destroy();

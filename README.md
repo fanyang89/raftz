@@ -29,7 +29,7 @@ five established Raft implementations.
 
 ## Quick Start
 
-raftz requires Zig 0.16.0 or newer and tracks the latest stable release with
+raftz requires Zig 0.17.0 or newer and tracks the latest stable release with
 [mise](https://mise.jdx.dev/), which is recommended for
 tool installation and project tasks, but direct `zig build` commands also work.
 

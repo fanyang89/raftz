@@ -473,7 +473,7 @@ const TestEventSink = struct {
 
 fn validTestConfig() Config {
     return .{
-        .identity = .{ .cluster_id = [_]u8{1} ** 16, .node_id = 2 },
+        .identity = .{ .cluster_id = @as([16]u8, @splat(1)), .node_id = 2 },
         .listen_addr = "127.0.0.1:0",
     };
 }
@@ -672,7 +672,7 @@ test "grpc transport config validation rejects invalid fields" {
     config.identity.node_id = 0;
     try std.testing.expectError(error.InvalidNodeId, config.validate());
     config = validTestConfig();
-    config.identity.cluster_id = [_]u8{0} ** 16;
+    config.identity.cluster_id = @as([16]u8, @splat(0));
     try std.testing.expectError(error.ClusterIdRequired, config.validate());
     config = validTestConfig();
     config.listen_addr = "";

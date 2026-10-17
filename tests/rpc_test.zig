@@ -2,8 +2,8 @@ const std = @import("std");
 const raft = @import("raftz");
 
 const allocator = std.heap.smp_allocator;
-const cluster_a = [_]u8{1} ** 16;
-const cluster_b = [_]u8{2} ** 16;
+const cluster_a = @as([16]u8, @splat(1));
+const cluster_b = @as([16]u8, @splat(2));
 
 const Capture = struct {
     messages: std.ArrayList(raft.Message) = .empty,

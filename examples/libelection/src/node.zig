@@ -148,14 +148,14 @@ pub const Node = struct {
         self.stop_requested.store(false, .release);
         self.lifecycle = .running;
         lock(&self.status_mutex);
-        self.status.state = @intFromEnum(api.NodeState.running);
-        self.status.last_error = @intFromEnum(api.Error.ok);
+        self.status.state = @backingInt(api.NodeState.running);
+        self.status.last_error = @backingInt(api.Error.ok);
         self.status_mutex.unlock();
         if (self.mode == .managed) {
             const thread = std.Thread.spawn(.{}, runDriver, .{self}) catch |err| {
                 self.lifecycle = .created;
                 lock(&self.status_mutex);
-                self.status.state = @intFromEnum(api.NodeState.created);
+                self.status.state = @backingInt(api.NodeState.created);
                 self.status_mutex.unlock();
                 self.lifecycle_mutex.unlock();
                 return err;
@@ -289,7 +289,7 @@ pub const Node = struct {
         const leader_active = state == .running and core.role == .leader and
             self.raftor.getRawNode().raftConst().commitToCurrentTerm();
         const next = api.Status{
-            .state = @intFromEnum(state),
+            .state = @backingInt(state),
             .role = roleValue(core.role),
             .leader_active = @intFromBool(leader_active),
             .node_id = core.id,
@@ -297,12 +297,12 @@ pub const Node = struct {
             .leader_id = core.leader_id,
             .commit_index = core.commit_index,
             .applied_index = core.applied_index,
-            .last_error = @intFromEnum(failure),
+            .last_error = @backingInt(failure),
         };
 
         lock(&self.status_mutex);
         const was_active = self.status.leader_active != 0;
-        const was_failed = self.status.state == @intFromEnum(api.NodeState.failed);
+        const was_failed = self.status.state == @backingInt(api.NodeState.failed);
         self.status = next;
         self.status_mutex.unlock();
 
@@ -317,7 +317,7 @@ pub const Node = struct {
         if (self.callback_thread_id.cmpxchgStrong(0, thread_id, .acq_rel, .acquire) != null) return;
         defer self.callback_thread_id.store(0, .release);
         const event = api.Event{
-            .event_type = @intFromEnum(event_type),
+            .event_type = @backingInt(event_type),
             .status = status,
         };
         callback(self.callbacks.user_data, &event);
@@ -379,7 +379,7 @@ fn validateMembership(raftor: *const raft.Raftor, peers: []const raft.Peer) !voi
 }
 
 fn roleValue(role: raft.StateRole) u32 {
-    return @intFromEnum(switch (role) {
+    return @backingInt(switch (role) {
         .follower => api.Role.follower,
         .candidate => api.Role.candidate,
         .leader => api.Role.leader,
@@ -638,14 +638,14 @@ fn encodeIdentity(node_id: u64, cluster_id: [16]u8) [identity_size]u8 {
     std.mem.writeInt(u32, encoded[8..12], identity_version, .little);
     std.mem.writeInt(u64, encoded[16..24], node_id, .little);
     @memcpy(encoded[24..40], &cluster_id);
-    std.mem.writeInt(u32, encoded[40..44], std.hash.crc.Crc32Iscsi.hash(encoded[0..40]), .little);
+    std.mem.writeInt(u32, encoded[40..44], std.hash.crc.@"CRC-32/ISCSI".hash(encoded[0..40]), .little);
     return encoded;
 }
 
 fn validateIdentity(encoded: []const u8, node_id: u64, cluster_id: [16]u8) !void {
     if (!std.mem.eql(u8, encoded[0..8], identity_magic) or
         std.mem.readInt(u32, encoded[8..12], .little) != identity_version or
-        std.mem.readInt(u32, encoded[40..44], .little) != std.hash.crc.Crc32Iscsi.hash(encoded[0..40]))
+        std.mem.readInt(u32, encoded[40..44], .little) != std.hash.crc.@"CRC-32/ISCSI".hash(encoded[0..40]))
     {
         return error.IdentityCorrupt;
     }

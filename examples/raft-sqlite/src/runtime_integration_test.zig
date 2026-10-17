@@ -369,7 +369,7 @@ fn waitForMember(
                 }
                 if (expected == .retired and
                     !hasMember(response, node_id) and
-                    std.mem.containsAtLeastScalar(u64, response.retired_node_ids.items, 1, node_id))
+                    std.mem.containsAtLeastScalar(u64, response.retired_node_ids.items, node_id, 1))
                 {
                     matched = true;
                 }
@@ -496,7 +496,7 @@ fn agreedClusterLeader(statuses: *const [3]?raft.NodeStatus) ?usize {
 }
 
 fn waitForClusterLeader(runtimes: *[3]?*runtime_mod.Runtime) !usize {
-    var statuses: [3]?raft.NodeStatus = .{null} ** 3;
+    var statuses: [3]?raft.NodeStatus = @splat(null);
     for (0..1000) |_| {
         for (runtimes, 0..) |maybe_runtime, index| {
             const runtime = maybe_runtime orelse continue;
@@ -530,7 +530,7 @@ test "cluster leader selection waits for term and leader agreement" {
 }
 
 test "cluster leader selection requires a quorum but ignores stopped nodes" {
-    var statuses: [3]?raft.NodeStatus = .{null} ** 3;
+    var statuses: [3]?raft.NodeStatus = @splat(null);
     try std.testing.expectEqual(null, agreedClusterLeader(&statuses));
     statuses[0] = .{ .id = 1, .role = .leader, .term = 3, .leader_id = 1 };
     try std.testing.expectEqual(null, agreedClusterLeader(&statuses));

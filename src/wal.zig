@@ -53,7 +53,7 @@ pub const WalDirListing = fs_mod.DirListing;
 pub const WalDirEntryKind = fs_mod.EntryKind;
 pub const linuxWalFileSystem = realFileSystem;
 
-const Crc32Iscsi = std.hash.crc.Crc32Iscsi;
+const Crc32Iscsi = std.hash.crc.@"CRC-32/ISCSI";
 
 const log = @import("grpc_lite").log;
 
@@ -116,7 +116,7 @@ fn buildRecord(allocator: std.mem.Allocator, record_type: RecordType, payload: [
 
     // CRC covers: type(1) + flags(1) + reserved(2) + length(4) + padding(4) + payload
     var crc = Crc32Iscsi.init();
-    crc.update(&[_]u8{@intFromEnum(record_type)});
+    crc.update(&[_]u8{@backingInt(record_type)});
     crc.update(&[_]u8{0}); // flags
     var reserved: [2]u8 = .{ 0, 0 };
     crc.update(&reserved);
@@ -131,7 +131,7 @@ fn buildRecord(allocator: std.mem.Allocator, record_type: RecordType, payload: [
 
     // Write header.
     std.mem.writeInt(u32, out[0..4], crc_val, .little); // crc
-    out[4] = @intFromEnum(record_type); // type
+    out[4] = @backingInt(record_type); // type
     out[5] = 0; // flags
     @memset(out[6..8], 0); // reserved
     std.mem.writeInt(u32, out[8..12], length, .little); // length
@@ -217,7 +217,7 @@ fn serializeEntry(allocator: std.mem.Allocator, entry: Entry) ![]u8 {
     const total = try std.math.add(usize, data_end, entry.context.len);
     var out = try allocator.alloc(u8, total);
     var pos: usize = 0;
-    out[pos] = @intFromEnum(entry.entry_type);
+    out[pos] = @backingInt(entry.entry_type);
     pos += 1;
     std.mem.writeInt(u64, out[pos..][0..8], entry.term, .little);
     pos += 8;
@@ -364,8 +364,8 @@ fn readU64Slice(allocator: std.mem.Allocator, data: []const u8, pos: *usize) ![]
 }
 
 fn checkedEnum(comptime T: type, value: std.meta.Tag(T)) ?T {
-    inline for (std.meta.fields(T)) |field| {
-        if (field.value == value) return @enumFromInt(value);
+    inline for (@typeInfo(T).@"enum".field_values) |field_value| {
+        if (field_value == value) return @fromBackingInt(@intCast(value));
     }
     return null;
 }
@@ -407,7 +407,7 @@ pub const WAL = struct {
         // Create directory if it does not exist.
         if (try segment_mod.makeDir(config.fs, config.dir)) {
             const parent = std.fs.path.dirname(config.dir) orelse ".";
-            const parent_z = try allocator.dupeZ(u8, parent);
+            const parent_z = try allocator.dupeSentinel(u8, parent, 0);
             defer allocator.free(parent_z);
             try config.fs.syncDir(parent_z);
         }
@@ -1086,7 +1086,7 @@ fn decodeSnapshotMembership(allocator: std.mem.Allocator, snapshot: Snapshot) !?
 fn membershipDescendsFrom(current: ClusterMembership, snapshot: ClusterMembership) bool {
     if (!std.mem.eql(u8, &current.cluster_id, &snapshot.cluster_id)) return false;
     for (snapshot.retired_node_ids) |retired_id| {
-        if (!std.mem.containsAtLeastScalar(u64, current.retired_node_ids, 1, retired_id)) return false;
+        if (!std.mem.containsAtLeastScalar(u64, current.retired_node_ids, retired_id, 1)) return false;
     }
     return true;
 }
@@ -1393,15 +1393,15 @@ test "wal: fixed-size payload decoders reject wrong lengths" {
     try std.testing.expectEqual(@as(u64, 42), snapshot.index);
     try std.testing.expectEqual(@as(u64, 7), snapshot.term);
 
-    try std.testing.expectError(error.HardStateParseError, deserializeHardState(&([_]u8{0} ** 23)));
-    try std.testing.expectError(error.HardStateParseError, deserializeHardState(&([_]u8{0} ** 25)));
-    try std.testing.expectError(error.SnapshotParseError, deserializeSnapshotMetadata(&([_]u8{0} ** 15)));
-    try std.testing.expectError(error.SnapshotParseError, deserializeSnapshotMetadata(&([_]u8{0} ** 17)));
+    try std.testing.expectError(error.HardStateParseError, deserializeHardState(&(@as([23]u8, @splat(0)))));
+    try std.testing.expectError(error.HardStateParseError, deserializeHardState(&(@as([25]u8, @splat(0)))));
+    try std.testing.expectError(error.SnapshotParseError, deserializeSnapshotMetadata(&(@as([15]u8, @splat(0)))));
+    try std.testing.expectError(error.SnapshotParseError, deserializeSnapshotMetadata(&(@as([17]u8, @splat(0)))));
 }
 
 test "wal: maximum record length is rejected without overflow" {
-    var header = [_]u8{0} ** RECORD_HEADER_SIZE;
-    header[4] = @intFromEnum(RecordType.entry);
+    var header = @as([RECORD_HEADER_SIZE]u8, @splat(0));
+    header[4] = @backingInt(RecordType.entry);
     std.mem.writeInt(u32, header[8..12], std.math.maxInt(u32), .little);
     std.mem.writeInt(u32, header[12..16], 1, .little);
     try std.testing.expect(!parseRecord(&header).valid);
@@ -1546,7 +1546,7 @@ test "wal: state updates clean up allocation failures" {
                 .{ .node_id = 1, .address = @constCast("node-1") },
             };
             const membership = ClusterMembership{
-                .cluster_id = .{1} ++ .{0} ** 15,
+                .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
                 .peers = &peers,
             };
             try wal.migrateLegacyMembership(membership, 2, membership);
@@ -1558,7 +1558,7 @@ test "wal: state updates clean up allocation failures" {
 }
 
 test "wal: membership ancestry requires every retired node" {
-    const cluster_id = [_]u8{1} ++ [_]u8{0} ** 15;
+    const cluster_id = [_]u8{1} ++ @as([15]u8, @splat(0));
     try std.testing.expect(membershipDescendsFrom(
         .{ .cluster_id = cluster_id, .retired_node_ids = @constCast(&[_]u64{ 2, 3 }) },
         .{ .cluster_id = cluster_id, .retired_node_ids = @constCast(&[_]u64{2}) },
@@ -1587,7 +1587,7 @@ fn testMembershipBytes(allocator: std.mem.Allocator, cluster_marker: u8, address
         .{ .node_id = 1, .address = address },
     };
     return (ClusterMembership{
-        .cluster_id = .{cluster_marker} ++ .{0} ** 15,
+        .cluster_id = .{cluster_marker} ++ @as([15]u8, @splat(0)),
         .peers = &peers,
     }).encode(allocator);
 }
@@ -1613,7 +1613,7 @@ fn writeLegacyV1Snapshot(
     std.mem.writeInt(u64, bytes[56..64], payload.len, .little);
     std.mem.writeInt(u64, bytes[64..72], voter_id, .little);
     @memcpy(bytes[72..], payload);
-    std.mem.writeInt(u32, bytes[8..12], std.hash.crc.Crc32Iscsi.hash(bytes[12..]), .little);
+    std.mem.writeInt(u32, bytes[8..12], std.hash.crc.@"CRC-32/ISCSI".hash(bytes[12..]), .little);
     const path = try std.fmt.allocPrintSentinel(allocator, "{s}/snapshot-{d}-{d}.snap", .{ dir, index, term_value }, 0);
     defer allocator.free(path);
     const fd = try fs.open(path, .write_truncate);
@@ -2140,7 +2140,7 @@ test "wal: legacy membership migration without snapshot survives reopen" {
             .{ .node_id = 1, .address = @constCast("node-1") },
         };
         try storage.migrateLegacyMembership(allocator, .{
-            .cluster_id = .{1} ++ .{0} ** 15,
+            .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
             .peers = &peers,
         }, 2, null);
     }
@@ -2185,7 +2185,7 @@ test "wal: legacy membership migration rewrites v1 snapshot before metadata" {
     var peers = [_]cluster_membership_mod.PeerEndpoint{
         .{ .node_id = 1, .address = @constCast("node-1") },
     };
-    const membership = ClusterMembership{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers };
+    const membership = ClusterMembership{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers };
     {
         var ws = try WALStorage.openWithFs(allocator, path, fs);
         defer ws.deinit();
@@ -2244,7 +2244,7 @@ test "wal: local snapshot membership survives reopen" {
         try iface.setMembershipState(
             allocator,
             .{ .voters = @constCast(&[_]u64{1}) },
-            .{ .cluster_id = .{2} ++ .{0} ** 15, .peers = &peers },
+            .{ .cluster_id = .{2} ++ @as([15]u8, @splat(0)), .peers = &peers },
             1,
         );
         try iface.applyLocalSnapshot(allocator, .{
@@ -2277,7 +2277,7 @@ test "wal: snapshot membership rejection does not mutate state" {
     try ws.asWritableStorage().setMembershipState(
         allocator,
         .{ .voters = @constCast(&[_]u64{1}) },
-        .{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers },
+        .{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers },
         1,
     );
     const membership = try testMembershipBytes(allocator, 1, @constCast("node-1"));
@@ -2316,7 +2316,7 @@ test "wal: local snapshot membership rejection does not mutate state" {
     try iface.setMembershipState(
         allocator,
         .{ .voters = @constCast(&[_]u64{1}) },
-        .{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers },
+        .{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers },
         1,
     );
     const membership = try testMembershipBytes(allocator, 1, @constCast("node-1"));
@@ -2424,7 +2424,7 @@ test "wal: recovery accepts membership newer than the local snapshot" {
         try iface.setMembershipState(
             allocator,
             .{ .voters = @constCast(&[_]u64{ 1, 2 }) },
-            .{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers },
+            .{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers },
             2,
         );
         try iface.sync();
@@ -2516,7 +2516,7 @@ test "wal: membership survives restart and initial state is deep" {
         try ws.asWritableStorage().setMembershipState(
             allocator,
             .{ .voters = @constCast(&[_]u64{ 1, 2 }) },
-            .{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers },
+            .{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers },
             8,
         );
         try ws.asWritableStorage().sync();
@@ -2549,7 +2549,7 @@ test "wal: invalid membership is rejected without mutation" {
     var peers = [_]cluster_membership_mod.PeerEndpoint{
         .{ .node_id = 1, .address = @constCast("node-1") },
     };
-    const membership = ClusterMembership{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers };
+    const membership = ClusterMembership{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers };
     const iface = ws.asWritableStorage();
     try iface.setMembershipState(allocator, .{ .voters = @constCast(&[_]u64{1}) }, membership, 4);
     const write_offset = ws.wal.segment_manager.getCurrent().?.write_offset;
@@ -2582,7 +2582,7 @@ test "wal: unpublished membership state is not recovered" {
         try ws.asWritableStorage().setMembershipState(
             allocator,
             .{ .voters = @constCast(&[_]u64{1}) },
-            .{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers },
+            .{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers },
             3,
         );
     }
@@ -2629,7 +2629,7 @@ test "wal: membership recovery rejects conf state mismatch" {
         .{ .node_id = 1, .address = @constCast("node-1") },
     };
     const membership = try (ClusterMembership{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = &peers,
     }).encode(allocator);
     defer allocator.free(membership);
@@ -2906,7 +2906,7 @@ test "wal: recovery cleans up every allocation failure" {
             .{ .node_id = 2, .address = @constCast("node-2") },
         };
         const membership = ClusterMembership{
-            .cluster_id = .{1} ++ .{0} ** 15,
+            .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
             .peers = &peers,
         };
         try wal.saveMembershipState(
