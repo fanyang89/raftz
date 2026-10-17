@@ -54,7 +54,7 @@ pub const Store = struct {
         errdefer allocator.free(dir);
         const created = fs.makeDir(dir) catch |err| return mapFsError(err);
         if (created) {
-            const root = try allocator.dupeZ(u8, data_dir);
+            const root = try allocator.dupeSentinel(u8, data_dir, 0);
             defer allocator.free(root);
             fs.syncDir(root) catch |err| return mapFsError(err);
         }

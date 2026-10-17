@@ -2,7 +2,7 @@ const std = @import("std");
 const raft = @import("raftz");
 
 const allocator = std.heap.smp_allocator;
-const cluster_id: raft.ClusterId = .{0x47} ++ .{0x52} ** 15;
+const cluster_id: raft.ClusterId = .{0x47} ++ @as([15]u8, @splat(0x52));
 const node_count = 4;
 const initial_node_count = 3;
 
@@ -111,8 +111,8 @@ const Cluster = struct {
     addresses: [node_count][]const u8 = undefined,
     storages: [node_count]raft.MemoryStorage = undefined,
     machines: [node_count]TestStateMachine = undefined,
-    transports: [node_count]?*raft.GrpcLiteTransport = .{null} ** node_count,
-    raftors: [node_count]?*raft.Raftor = .{null} ** node_count,
+    transports: [node_count]?*raft.GrpcLiteTransport = @splat(null),
+    raftors: [node_count]?*raft.Raftor = @splat(null),
     storage_count: usize = 0,
     machine_count: usize = 0,
 

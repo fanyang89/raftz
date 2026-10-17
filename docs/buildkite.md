@@ -90,7 +90,7 @@ cleanup. Forced host loss relies on Buildkite destroying the job environment.
 `.buildkite/scripts/run.sh` checks the actual OS/architecture before downloading
 anything. It downloads mise 2026.9.1 with architecture-specific hashes taken from
 the upstream `SHASUMS256.txt`, installs the tools in `mise.toml`, and uses
-`mise exec` to supply PATH to every command. Zig remains pinned to 0.16.0.
+`mise exec` to supply PATH to every command. Zig remains pinned to 0.17.0.
 Downloads require access to GitHub releases/codeload and the configured tool
 registries. Temporary directories respect an existing `TMPDIR`, otherwise use
 `$HOME/tmp`.

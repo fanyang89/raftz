@@ -1,7 +1,7 @@
 .{
     .name = .libelection,
     .version = "0.1.0",
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .fingerprint = 0xd7acd4e2d8bdf7b8,
     .dependencies = .{
         .raftz = .{

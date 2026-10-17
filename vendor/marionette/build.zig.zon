@@ -1,0 +1,8 @@
+.{
+    .name = .marionette,
+    .version = "0.6.0",
+    .fingerprint = 0x8afb77b114c43a8d,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{},
+    .paths = .{ "LICENSE", "README.raftz.md", "build.zig", "build.zig.zon", "src" },
+}

@@ -614,7 +614,7 @@ test "sleep retries with the remaining duration after interruption" {
             calls += 1;
             if (calls == 1) {
                 remaining.?.* = .{ .sec = 0, .nsec = 7 };
-                return @bitCast(-@as(isize, @intFromEnum(linux.E.INTR)));
+                return @bitCast(-@as(isize, @backingInt(linux.E.INTR)));
             }
             std.debug.assert(request.sec == 0 and request.nsec == 7);
             return 0;
@@ -631,7 +631,7 @@ const TestEventSink = struct {
 
 fn testConfig(node_id: u64) Config {
     return .{
-        .identity = .{ .cluster_id = [_]u8{1} ** 16, .node_id = node_id },
+        .identity = .{ .cluster_id = @as([16]u8, @splat(1)), .node_id = node_id },
         .stream_limits = .{},
         .reconnect_initial_delay_ns = 1,
         .reconnect_max_delay_ns = 2,
@@ -845,7 +845,7 @@ test "peer manager handles missing peers and snapshot acknowledgement" {
 
 test "stream identity parser rejects missing and duplicate metadata" {
     const allocator = std.testing.allocator;
-    const cluster_id = [_]u8{1} ** 16;
+    const cluster_id = @as([16]u8, @splat(1));
     var source: [8]u8 = undefined;
     var target: [8]u8 = undefined;
     std.mem.writeInt(u64, &source, 1, .little);
@@ -870,11 +870,11 @@ test "stream identity parser rejects missing and duplicate metadata" {
 
 test "stream identity parser rejects malformed values" {
     const allocator = std.testing.allocator;
-    const cluster_id = [_]u8{1} ** 16;
-    const zero_cluster = [_]u8{0} ** 16;
+    const cluster_id = @as([16]u8, @splat(1));
+    const zero_cluster = @as([16]u8, @splat(0));
     var source: [8]u8 = undefined;
     var target: [8]u8 = undefined;
-    const zero_node = [_]u8{0} ** 8;
+    const zero_node = @as([8]u8, @splat(0));
     std.mem.writeInt(u64, &source, 1, .little);
     std.mem.writeInt(u64, &target, 2, .little);
     const cases = [_]struct {

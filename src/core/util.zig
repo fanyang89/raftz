@@ -132,7 +132,7 @@ const crc32c = @import("crc32c");
 /// Compute the CRC32C checksum of an entry's wire-identifying fields:
 /// entry_type, context, then data.
 pub fn computeEntryChecksum(entry: Entry) u32 {
-    const entry_type_word: u32 = @intFromEnum(entry.entry_type);
+    const entry_type_word: u32 = @backingInt(entry.entry_type);
     var checksum = crc32c.value(std.mem.asBytes(&entry_type_word));
     if (entry.context.len != 0) checksum = crc32c.extend(checksum, entry.context);
     if (entry.data.len != 0) checksum = crc32c.extend(checksum, entry.data);
@@ -220,12 +220,12 @@ pub fn encodeConfChangeV2(allocator: std.mem.Allocator, cc: ConfChangeV2) ![]u8 
     pos += 4;
     out[pos] = cc_version;
     pos += 1;
-    out[pos] = @intFromEnum(cc.transition);
+    out[pos] = @backingInt(cc.transition);
     pos += 1;
     std.mem.writeInt(u16, out[pos..][0..2], change_count, .little);
     pos += 2;
     for (cc.changes) |c| {
-        out[pos] = @intFromEnum(c.change_type);
+        out[pos] = @backingInt(c.change_type);
         pos += 1;
         std.mem.writeInt(u64, out[pos..][0..8], c.node_id, .little);
         pos += 8;
@@ -275,8 +275,8 @@ pub fn decodeConfChangeV2(allocator: std.mem.Allocator, bytes: []const u8) !Conf
 }
 
 fn checkedEnum(comptime T: type, value: std.meta.Tag(T)) ?T {
-    inline for (std.meta.fields(T)) |field| {
-        if (field.value == value) return @enumFromInt(value);
+    inline for (@typeInfo(T).@"enum".field_values) |field_value| {
+        if (field_value == value) return @fromBackingInt(@intCast(value));
     }
     return null;
 }

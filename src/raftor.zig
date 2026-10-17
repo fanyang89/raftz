@@ -1432,7 +1432,7 @@ fn buildInitialMembership(
     join: bool,
 ) Error!InitialMembership {
     const cluster_id = config.cluster_id orelse return error.ClusterIdRequired;
-    if (std.mem.eql(u8, &cluster_id, &(@as(ClusterId, .{0} ** 16)))) return error.ClusterIdRequired;
+    if (std.mem.eql(u8, &cluster_id, &(@as(ClusterId, @as([16]u8, @splat(0)))))) return error.ClusterIdRequired;
 
     const peer_count = if (config.initial_peers.len == 0) @as(usize, 1) else config.initial_peers.len;
     if (join and config.initial_peers.len == 0) return error.InvalidConfig;
@@ -1485,7 +1485,7 @@ fn buildLegacyMembership(
     cluster_id: ClusterId,
     source: LegacySnapshotMembership,
 ) Error!ClusterMembership {
-    if (std.mem.eql(u8, &cluster_id, &(@as(ClusterId, .{0} ** 16)))) return error.ClusterIdRequired;
+    if (std.mem.eql(u8, &cluster_id, &(@as(ClusterId, @as([16]u8, @splat(0)))))) return error.ClusterIdRequired;
     var peers = try allocator.alloc(PeerEndpoint, source.peers.len);
     var initialized: usize = 0;
     errdefer {
@@ -1538,7 +1538,7 @@ test "sleep retries with the remaining duration after interruption" {
             calls += 1;
             if (calls == 1) {
                 remaining.?.* = .{ .sec = 0, .nsec = 7 };
-                return @bitCast(-@as(isize, @intFromEnum(linux.E.INTR)));
+                return @bitCast(-@as(isize, @backingInt(linux.E.INTR)));
             }
             std.debug.assert(request.sec == 0 and request.nsec == 7);
             return 0;

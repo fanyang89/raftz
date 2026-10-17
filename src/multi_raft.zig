@@ -2438,7 +2438,7 @@ pub const MultiRaftHost = struct {
 
     fn ensureGroupRoot(allocator: std.mem.Allocator, config: MultiRaftConfig) Error!void {
         const fs = config.file_system orelse fs_mod.realFileSystem();
-        const root = try allocator.dupeZ(u8, config.data_dir);
+        const root = try allocator.dupeSentinel(u8, config.data_dir, 0);
         defer allocator.free(root);
         _ = fs.makeDir(root) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,

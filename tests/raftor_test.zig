@@ -12,7 +12,7 @@ const Raftor = raft.Raftor;
 const RaftorConfig = raft.RaftorConfig;
 const MockStateMachine = raft.MockStateMachine;
 const StateRole = raft.StateRole;
-const durable_cluster_id: raft.ClusterId = .{1} ++ .{0} ** 15;
+const durable_cluster_id: raft.ClusterId = .{1} ++ @as([15]u8, @splat(0));
 
 const SyncFailingStorage = struct {
     inner: raft.WritableStorage,
@@ -181,7 +181,7 @@ const RecordingTransport = struct {
     stopped: bool = false,
     before_message_ctx: ?*anyopaque = null,
     before_message: ?*const fn (*anyopaque) void = null,
-    identity_value: raft.TransportIdentity = .{ .cluster_id = .{0} ** 16, .node_id = 0 },
+    identity_value: raft.TransportIdentity = .{ .cluster_id = @as([16]u8, @splat(0)), .node_id = 0 },
 
     fn init(alloc: std.mem.Allocator) RecordingTransport {
         return .{ .allocator = alloc };
@@ -513,7 +513,7 @@ fn seedMembership(
     hard_state: raft.HardState,
 ) !void {
     try storage.setMembershipState(allocator, conf_state, .{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = peers,
         .retired_node_ids = retired_node_ids,
     }, membership_index);
@@ -3058,7 +3058,7 @@ test "raftor: incoming snapshot syncs before membership reconcile" {
         .{ .node_id = 2, .address = @constCast("node-2") },
     };
     const membership = try (raft.ClusterMembership{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = &snapshot_peers,
     }).encode(allocator);
     const voters = try allocator.dupe(u64, &.{1});
@@ -3250,7 +3250,7 @@ test "raftor: durable bootstrap persists sorted membership and validates restart
     }
 
     var wrong_config = config;
-    wrong_config.cluster_id = .{2} ++ .{0} ** 15;
+    wrong_config.cluster_id = .{2} ++ @as([15]u8, @splat(0));
     try std.testing.expectError(
         error.ClusterIdMismatch,
         Raftor.createWithDependencies(allocator, wrong_config, .restart, dependencies),
@@ -3325,7 +3325,7 @@ test "raftor: transport identity mismatch fails before transport start" {
     var machine = MockStateMachine.init(allocator);
     defer machine.deinit();
     const mismatched_identity = raft.TransportIdentity{
-        .cluster_id = .{9} ** 16,
+        .cluster_id = @as([16]u8, @splat(9)),
         .node_id = 1,
     };
 

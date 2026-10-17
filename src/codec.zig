@@ -39,7 +39,7 @@ pub fn encodeMessage(allocator: std.mem.Allocator, msg: Message) ![]u8 {
     errdefer buf.deinit(allocator);
 
     // Scalar fields.
-    try buf.append(allocator, @intFromEnum(msg.msg_type));
+    try buf.append(allocator, @backingInt(msg.msg_type));
     try writeU64(allocator, &buf, msg.to);
     try writeU64(allocator, &buf, msg.from);
     try writeU64(allocator, &buf, msg.term);
@@ -60,7 +60,7 @@ pub fn encodeMessage(allocator: std.mem.Allocator, msg: Message) ![]u8 {
     // entries.
     try writeU32(allocator, &buf, try encodedLength(msg.entries.len));
     for (msg.entries) |e| {
-        try buf.append(allocator, @intFromEnum(e.entry_type));
+        try buf.append(allocator, @backingInt(e.entry_type));
         try writeU64(allocator, &buf, e.term);
         try writeU64(allocator, &buf, e.index);
         var checksum_bytes: [4]u8 = undefined;
@@ -112,7 +112,7 @@ pub fn encodeFramed(
     try writeU64(allocator, &frame, 0); // request_id
 
     // Message type + payload size.
-    try frame.append(allocator, @intFromEnum(msg.msg_type));
+    try frame.append(allocator, @backingInt(msg.msg_type));
     try writeU32(allocator, &frame, try encodedLength(payload.len));
 
     // Payload.
@@ -399,8 +399,8 @@ const Decoder = struct {
 };
 
 fn checkedEnum(comptime T: type, value: std.meta.Tag(T)) ?T {
-    inline for (std.meta.fields(T)) |field| {
-        if (field.value == value) return @enumFromInt(value);
+    inline for (@typeInfo(T).@"enum".field_values) |field_value| {
+        if (field_value == value) return @fromBackingInt(@intCast(value));
     }
     return null;
 }
@@ -572,7 +572,7 @@ test "codec: framed decoder validates version and message type" {
 
     var mismatched_type = try encodeFramed(allocator, original, 1, 2);
     defer allocator.free(mismatched_type);
-    mismatched_type[32] = @intFromEnum(MessageType.heartbeat);
+    mismatched_type[32] = @backingInt(MessageType.heartbeat);
     try std.testing.expectError(error.MessageTypeMismatch, decodeFramed(allocator, mismatched_type));
 }
 

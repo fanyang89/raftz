@@ -689,7 +689,7 @@ test "multi raft: online replica migration replaces a voter" {
     defer machine_two.deinit();
     var machine_three = raft.MockStateMachine.init(allocator);
     defer machine_three.deinit();
-    const cluster_id = [_]u8{0x95} ** 16;
+    const cluster_id = @as([16]u8, @splat(0x95));
     const initial_peers = [_]raft.Peer{
         .{ .id = 1, .context = "node-1" },
         .{ .id = 2, .context = "node-2" },
@@ -774,7 +774,7 @@ test "multi raft: migrating the local leader stops its retired group" {
     defer machine_one.deinit();
     var machine_two = raft.MockStateMachine.init(allocator);
     defer machine_two.deinit();
-    const cluster_id = [_]u8{0x94} ** 16;
+    const cluster_id = @as([16]u8, @splat(0x94));
     const initial_peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
     var source_config = groupConfig(94, 1, &initial_peers);
     source_config.raftor.cluster_id = cluster_id;
@@ -830,7 +830,7 @@ test "multi raft: migration timeout preserves the safe intermediate membership" 
     defer machine_two.deinit();
     var machine_three = raft.MockStateMachine.init(allocator);
     defer machine_three.deinit();
-    const cluster_id = [_]u8{0x96} ** 16;
+    const cluster_id = @as([16]u8, @splat(0x96));
     const initial_peers = [_]raft.Peer{
         .{ .id = 1, .context = "node-1" },
         .{ .id = 2, .context = "node-2" },
@@ -881,7 +881,7 @@ test "multi raft: migration cancellation does not roll back learner addition" {
     defer machine.deinit();
     const initial_peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
     var group_config = groupConfig(97, 1, &initial_peers);
-    group_config.raftor.cluster_id = [_]u8{0x97} ** 16;
+    group_config.raftor.cluster_id = @as([16]u8, @splat(0x97));
     try host.addGroup(group_config, machine.stateMachine());
     try host.campaign(97);
     var migration = ReplicaMigrationCapture{};
@@ -956,7 +956,7 @@ test "multi raft: durable migration intent resumes after host restart" {
     defer fixture.deinit();
     const initial_peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
     var config = groupConfig(101, 1, &initial_peers);
-    config.raftor.cluster_id = [_]u8{0x11} ** 16;
+    config.raftor.cluster_id = @as([16]u8, @splat(0x11));
 
     {
         const network = try raft.LoopbackMultiNetwork.create(allocator);
@@ -1046,7 +1046,7 @@ test "multi raft: corrupt migration intent fails host recovery" {
     defer fixture.deinit();
     const initial_peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
     var config = groupConfig(102, 1, &initial_peers);
-    config.raftor.cluster_id = [_]u8{0x12} ** 16;
+    config.raftor.cluster_id = @as([16]u8, @splat(0x12));
     {
         const network = try raft.LoopbackMultiNetwork.create(allocator);
         defer network.destroy();
@@ -1176,7 +1176,7 @@ test "multi raft: migration status and cancellation are thread safe" {
     defer machine.deinit();
     const initial_peers = [_]raft.Peer{.{ .id = 1, .context = "node-1" }};
     var config = groupConfig(100, 1, &initial_peers);
-    config.raftor.cluster_id = [_]u8{0x10} ** 16;
+    config.raftor.cluster_id = @as([16]u8, @splat(0x10));
     try host.addGroup(config, machine.stateMachine());
     try host.campaign(100);
 

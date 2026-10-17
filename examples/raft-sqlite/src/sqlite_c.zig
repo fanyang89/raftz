@@ -1,3 +1,1 @@
-pub const c = @cImport({
-    @cInclude("sqlite3.h");
-});
+pub const c = @import("sqlite_bindings");
