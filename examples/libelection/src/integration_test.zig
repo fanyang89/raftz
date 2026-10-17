@@ -3,7 +3,7 @@ const api = @import("api_types.zig");
 const Node = @import("node.zig").Node;
 
 const allocator = std.heap.smp_allocator;
-const cluster_id = [_]u8{1} ++ [_]u8{0} ** 15;
+const cluster_id = [_]u8{1} ++ @as([15]u8, @splat(0));
 
 const Capture = struct {
     acquired: std.atomic.Value(u32) = .init(0),
@@ -49,7 +49,7 @@ test "external drive elects a durable single-node leader" {
     }};
     var capture: Capture = .{};
     var node: ?*Node = try Node.create(allocator, .{
-        .drive_mode = @intFromEnum(api.DriveMode.external),
+        .drive_mode = @backingInt(api.DriveMode.external),
         .node_id = 1,
         .cluster_id = cluster_id,
         .listen_address = bytes(address),
@@ -71,7 +71,7 @@ test "external drive elects a durable single-node leader" {
         if (node.?.getStatus().leader_active != 0) break;
     }
     const status = node.?.getStatus();
-    try std.testing.expectEqual(@as(u32, @intFromEnum(api.Role.leader)), status.role);
+    try std.testing.expectEqual(@as(u32, @backingInt(api.Role.leader)), status.role);
     try std.testing.expectEqual(@as(u32, 1), status.leader_active);
     try std.testing.expectEqual(@as(u32, 1), capture.acquired.load(.acquire));
     try std.testing.expectEqual(@as(usize, @intCast(std.Thread.getCurrentId())), capture.acquired_thread.load(.acquire));
@@ -84,7 +84,7 @@ test "external drive elects a durable single-node leader" {
 
     var restarted_capture: Capture = .{};
     const restarted = try Node.create(allocator, .{
-        .drive_mode = @intFromEnum(api.DriveMode.external),
+        .drive_mode = @backingInt(api.DriveMode.external),
         .node_id = 1,
         .cluster_id = cluster_id,
         .listen_address = bytes(address),
@@ -127,7 +127,7 @@ test "data directory is locked and bound to the local node" {
     };
 
     const first = try Node.create(allocator, .{
-        .drive_mode = @intFromEnum(api.DriveMode.external),
+        .drive_mode = @backingInt(api.DriveMode.external),
         .node_id = 1,
         .cluster_id = cluster_id,
         .listen_address = bytes(addresses[0]),
@@ -136,7 +136,7 @@ test "data directory is locked and bound to the local node" {
         .peer_count = peers.len,
     }, .{});
     try std.testing.expectError(error.DataDirectoryInUse, Node.create(allocator, .{
-        .drive_mode = @intFromEnum(api.DriveMode.external),
+        .drive_mode = @backingInt(api.DriveMode.external),
         .node_id = 1,
         .cluster_id = cluster_id,
         .listen_address = bytes(addresses[0]),
@@ -147,7 +147,7 @@ test "data directory is locked and bound to the local node" {
     first.destroy();
 
     try std.testing.expectError(error.IdentityMismatch, Node.create(allocator, .{
-        .drive_mode = @intFromEnum(api.DriveMode.external),
+        .drive_mode = @backingInt(api.DriveMode.external),
         .node_id = 2,
         .cluster_id = cluster_id,
         .listen_address = bytes(addresses[1]),
@@ -160,7 +160,7 @@ test "data directory is locked and bound to the local node" {
     defer allocator.free(identity_path);
     try std.Io.Dir.deleteFileAbsolute(std.testing.io, identity_path);
     try std.testing.expectError(error.IdentityMissing, Node.create(allocator, .{
-        .drive_mode = @intFromEnum(api.DriveMode.external),
+        .drive_mode = @backingInt(api.DriveMode.external),
         .node_id = 1,
         .cluster_id = cluster_id,
         .listen_address = bytes(addresses[0]),
@@ -279,7 +279,7 @@ fn createNode(
     callbacks: api.Callbacks,
 ) !*Node {
     return Node.create(allocator, .{
-        .drive_mode = @intFromEnum(mode),
+        .drive_mode = @backingInt(mode),
         .node_id = index + 1,
         .cluster_id = cluster_id,
         .listen_address = bytes(addresses[index]),
@@ -299,7 +299,7 @@ fn waitForLeader(nodes: *[3]?*Node) !usize {
         for (nodes, 0..) |maybe_node, index| {
             const node = maybe_node orelse continue;
             const status = node.getStatus();
-            if (status.state == @intFromEnum(api.NodeState.failed)) return error.DriverFailed;
+            if (status.state == @backingInt(api.NodeState.failed)) return error.DriverFailed;
             if (status.leader_active != 0) {
                 leader = index;
                 leader_count += 1;

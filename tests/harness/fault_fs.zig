@@ -39,7 +39,7 @@ pub const FaultFs = struct {
     inner: Fs,
     faults: [max_faults]Fault = undefined,
     fault_count: usize = 0,
-    occurrences: [@typeInfo(Operation).@"enum".fields.len]u32 = @splat(0),
+    occurrences: [@typeInfo(Operation).@"enum".field_names.len]u32 = @splat(0),
 
     pub fn init(inner: Fs) FaultFs {
         return .{ .inner = inner };
@@ -66,7 +66,7 @@ pub const FaultFs = struct {
 
     pub fn assertConsumed(self: *const FaultFs) error{FaultNotConsumed}!void {
         for (self.faults[0..self.fault_count]) |fault| {
-            if (self.occurrences[@intFromEnum(fault.operation)] < fault.occurrence) return error.FaultNotConsumed;
+            if (self.occurrences[@backingInt(fault.operation)] < fault.occurrence) return error.FaultNotConsumed;
         }
     }
 
@@ -75,7 +75,7 @@ pub const FaultFs = struct {
     }
 
     fn takeEffect(self: *FaultFs, operation: Operation) ?Effect {
-        const index = @intFromEnum(operation);
+        const index = @backingInt(operation);
         self.occurrences[index] += 1;
         for (self.faults[0..self.fault_count]) |fault| {
             if (fault.operation == operation and fault.occurrence == self.occurrences[index]) return fault.effect;

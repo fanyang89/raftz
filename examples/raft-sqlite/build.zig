@@ -32,7 +32,7 @@ pub fn build(b: *std.Build) void {
         .include_directories = &.{b.path("proto")},
     }) orelse return;
     const generate_proto_step = b.step("gen-proto", "Generate Zig protobuf sources");
-    generate_proto_step.dependOn(&generate_proto.step);
+    generate_proto_step.dependOn(generate_proto.step);
 
     const database_proto = b.createModule(.{
         .root_source_file = b.path(".zig-cache/generated/raft/sqlite/v1.pb.zig"),
@@ -47,6 +47,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    const sqlite_bindings = b.addTranslateC(.{
+        .root_source_file = b.path("vendor/sqlite/sqlite3.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sqlite_c.addImport("sqlite_bindings", sqlite_bindings.createModule());
     sqlite_c.addIncludePath(b.path("vendor/sqlite"));
     sqlite_c.addCSourceFile(.{
         .file = b.path("vendor/sqlite/sqlite3.c"),
@@ -77,7 +83,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const library = b.addLibrary(.{ .name = "raft-sqlite", .root_module = raft_sqlite });
-    library.step.dependOn(&generate_proto.step);
+    library.step.dependOn(generate_proto.step);
     b.installArtifact(library);
 
     const executable_module = b.createModule(.{
@@ -87,17 +93,17 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "raft_sqlite", .module = raft_sqlite }},
     });
     const executable = b.addExecutable(.{ .name = "raft-sqlite", .root_module = executable_module });
-    executable.step.dependOn(&generate_proto.step);
+    executable.step.dependOn(generate_proto.step);
     b.installArtifact(executable);
 
     const tests = b.addTest(.{ .root_module = raft_sqlite });
-    tests.step.dependOn(&generate_proto.step);
+    tests.step.dependOn(generate_proto.step);
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit and integration tests");
     test_step.dependOn(&run_tests.step);
 
     const run_executable = b.addRunArtifact(executable);
-    if (b.args) |args| run_executable.addArgs(args);
+    run_executable.addPassthruArgs();
     const run_step = b.step("run", "Run raft-sqlite");
     run_step.dependOn(&run_executable.step);
 

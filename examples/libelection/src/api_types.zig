@@ -59,7 +59,7 @@ pub const Peer = extern struct {
 
 pub const NodeOptions = extern struct {
     struct_size: usize = @sizeOf(NodeOptions),
-    drive_mode: u32 = @intFromEnum(DriveMode.managed),
+    drive_mode: u32 = @backingInt(DriveMode.managed),
     node_id: u64 = 0,
     cluster_id: [16]u8 = @splat(0),
     listen_address: BytesView = .{},
@@ -73,8 +73,8 @@ pub const NodeOptions = extern struct {
 
 pub const Status = extern struct {
     struct_size: usize = @sizeOf(Status),
-    state: u32 = @intFromEnum(NodeState.created),
-    role: u32 = @intFromEnum(Role.follower),
+    state: u32 = @backingInt(NodeState.created),
+    role: u32 = @backingInt(Role.follower),
     leader_active: u32 = 0,
     reserved: u32 = 0,
     node_id: u64 = 0,
@@ -82,7 +82,7 @@ pub const Status = extern struct {
     leader_id: u64 = 0,
     commit_index: u64 = 0,
     applied_index: u64 = 0,
-    last_error: i32 = @intFromEnum(Error.ok),
+    last_error: i32 = @backingInt(Error.ok),
 };
 
 pub const Event = extern struct {

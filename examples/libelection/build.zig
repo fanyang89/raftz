@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
         std.builtin.OptimizeMode,
         "optimize",
         "Prioritize performance, safety, or binary size",
-    ) orelse .ReleaseSafe;
+    ) orelse .safe;
     const raft_dependency = b.dependency("raftz", .{
         .target = target,
         .optimize = optimize,
@@ -45,6 +45,11 @@ pub fn build(b: *std.Build) void {
     package_static_library.addFileArg(static_library.getEmittedBin());
     const packaged_static_library = package_static_library.addOutputFileArg("libelection.a");
     package_static_library.addArg(b.graph.zig_exe);
+    const grpc_module = raft_dependency.module("raftz").import_table.get("grpc_lite").?;
+    for (grpc_module.link_objects.items) |object| switch (object) {
+        .static_path => |path| package_static_library.addFileArg(path),
+        else => {},
+    };
     const install_static = b.addInstallFileWithDir(
         packaged_static_library,
         .lib,
@@ -183,7 +188,7 @@ pub fn build(b: *std.Build) void {
 
         const installed_c_smoke = b.addSystemCommand(&.{"bash"});
         installed_c_smoke.addFileArg(b.path("tests/installed_c_smoke.sh"));
-        installed_c_smoke.addArg(b.getInstallPath(.prefix, ""));
+        installed_c_smoke.addDirectoryArg(.{ .relative = .{ .base = .install_prefix } });
         installed_c_smoke.addFileArg(b.path("tests/c_api_smoke.c"));
         installed_c_smoke.step.dependOn(&install_static.step);
         installed_c_smoke.step.dependOn(&install_shared.step);

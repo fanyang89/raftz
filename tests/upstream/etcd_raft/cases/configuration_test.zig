@@ -32,11 +32,11 @@ fn encodeConfChangeV2(changes: []const raft.ConfChangeSingle) ![]u8 {
     const encoded = try allocator.alloc(u8, 12 + changes.len * 9);
     @memcpy(encoded[0..4], "RCC2");
     encoded[4] = 1;
-    encoded[5] = @intFromEnum(raft.ConfChangeTransition.auto_);
+    encoded[5] = @backingInt(raft.ConfChangeTransition.auto_);
     std.mem.writeInt(u16, encoded[6..8], @intCast(changes.len), .little);
     var offset: usize = 8;
     for (changes) |change| {
-        encoded[offset] = @intFromEnum(change.change_type);
+        encoded[offset] = @backingInt(change.change_type);
         offset += 1;
         std.mem.writeInt(u64, encoded[offset..][0..8], change.node_id, .little);
         offset += 8;

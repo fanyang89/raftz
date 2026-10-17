@@ -46,7 +46,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("benchmark/main.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .imports = &.{
                 .{ .name = "nanozlog", .module = nanozlog_mod },
             },

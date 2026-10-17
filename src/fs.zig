@@ -398,7 +398,7 @@ test "RealFs round-trips files and directory listings" {
 test "Linux directory operations map interrupted open" {
     const Stub = struct {
         fn open(_: [*:0]const u8, _: linux.O, _: linux.mode_t) usize {
-            return @bitCast(-@as(isize, @intFromEnum(linux.E.INTR)));
+            return @bitCast(-@as(isize, @backingInt(linux.E.INTR)));
         }
     };
     try std.testing.expectError(error.Interrupted, linuxListDirUsingOpen(std.testing.allocator, ".", Stub.open));

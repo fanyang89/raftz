@@ -35,7 +35,7 @@ pub const Generator = struct {
         const context = try allocator.alloc(u8, total);
         @memcpy(context[0..4], magic);
         context[4] = version;
-        context[5] = @intFromEnum(kind);
+        context[5] = @backingInt(kind);
         @memset(context[6..8], 0);
         std.mem.writeInt(u64, context[8..16], self.node_id, .little);
         std.mem.writeInt(u64, context[16..24], self.incarnation, .little);

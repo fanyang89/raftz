@@ -72,7 +72,7 @@ pub const Database = struct {
     persistent: bool,
 
     pub fn init(allocator: std.mem.Allocator) Error!Database {
-        const cluster_id = [_]u8{0} ** 16;
+        const cluster_id = @as([16]u8, @splat(0));
         var self = try openConnection(allocator, ":memory:", cluster_id, false);
         errdefer self.deinit();
         try self.initializeSchema();
@@ -1048,7 +1048,7 @@ test "file database persists state and validates cluster identity" {
     defer allocator.free(root_path);
     const path = try std.fmt.allocPrintSentinel(allocator, "{s}/state.sqlite3", .{root_path}, 0);
     defer allocator.free(path);
-    const cluster_id: ClusterId = .{7} ++ .{0} ** 15;
+    const cluster_id: ClusterId = .{7} ++ @as([15]u8, @splat(0));
 
     {
         var arena: std.heap.ArenaAllocator = .init(allocator);
@@ -1070,7 +1070,7 @@ test "file database persists state and validates cluster identity" {
         try std.testing.expectEqualStrings("saved", response.rows.items[0].values.items[0].kind.?.text_value);
     }
 
-    const wrong_cluster: ClusterId = .{8} ++ .{0} ** 15;
+    const wrong_cluster: ClusterId = .{8} ++ @as([15]u8, @splat(0));
     try std.testing.expectError(error.IncompatibleDatabase, Database.openFile(allocator, path, wrong_cluster));
     {
         var database = try Database.openFile(allocator, path, cluster_id);
@@ -1172,7 +1172,7 @@ test "failed online backup leaves the destination database unchanged" {
     allocator.free(try destination.apply(allocator, destination_request, testHash("destination"), 1, 1));
     const current_pages = (try destination.serializedSize()) / page_size;
     var pragma_buffer: [64]u8 = undefined;
-    const pragma = try std.fmt.bufPrintZ(&pragma_buffer, "PRAGMA max_page_count={}", .{current_pages});
+    const pragma = try std.mem.printSentinel(&pragma_buffer, "PRAGMA max_page_count={}", .{current_pages}, 0);
     try destination.execInternal(pragma);
 
     try std.testing.expectError(error.SqliteFailure, destination.restore(2, 1, snapshot_data));
@@ -1184,7 +1184,7 @@ test "failed online backup leaves the destination database unchanged" {
 
 test "database migrates legacy snapshot metadata before installation" {
     const allocator = std.testing.allocator;
-    const cluster_id: ClusterId = .{9} ++ .{0} ** 15;
+    const cluster_id: ClusterId = .{9} ++ @as([15]u8, @splat(0));
     var legacy = try Database.openMemory(allocator, cluster_id);
     defer legacy.deinit();
     try legacy.execInternal(

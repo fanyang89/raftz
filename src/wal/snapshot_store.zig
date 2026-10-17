@@ -6,7 +6,7 @@ const types = @import("../core/types.zig");
 const cluster_membership_mod = @import("../cluster_membership.zig");
 
 const Snapshot = types.Snapshot;
-const Crc32Iscsi = std.hash.crc.Crc32Iscsi;
+const Crc32Iscsi = std.hash.crc.@"CRC-32/ISCSI";
 
 const snapshot_magic: u32 = 0x534E4150;
 const format_version_v1: u32 = 1;
@@ -229,7 +229,7 @@ test "snapshot store round-trips complete snapshots" {
                 .{ .node_id = 5, .address = @constCast("node-5") },
             };
             break :blk try (cluster_membership_mod.ClusterMembership{
-                .cluster_id = .{1} ++ .{0} ** 15,
+                .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
                 .peers = &peers,
             }).encode(allocator);
         },
@@ -264,7 +264,7 @@ test "snapshot store decodes a v1 fixture without membership" {
     const fs = fixture.fs();
     _ = try fs.makeDir(dir);
 
-    var bytes = [_]u8{0} ** (header_size + 8 + "legacy-state".len);
+    var bytes = @as([(header_size + 8 + "legacy-state".len)]u8, @splat(0));
     std.mem.writeInt(u32, bytes[0..4], snapshot_magic, .little);
     std.mem.writeInt(u32, bytes[4..8], format_version_v1, .little);
     std.mem.writeInt(u64, bytes[16..24], 7, .little);
@@ -309,7 +309,7 @@ test "snapshot store rejects malformed and mismatched membership" {
         .{ .node_id = 1, .address = @constCast("node-1") },
     };
     const membership = try (cluster_membership_mod.ClusterMembership{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = &peers,
     }).encode(allocator);
     defer allocator.free(membership);

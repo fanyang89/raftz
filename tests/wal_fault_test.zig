@@ -185,7 +185,7 @@ test "FaultFs legacy migration recovers retryable or complete state" {
             .{ .node_id = 1, .address = @constCast("node-1") },
         };
         const membership = raft.ClusterMembership{
-            .cluster_id = .{1} ++ .{0} ** 15,
+            .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
             .peers = &peers,
         };
         backend.inject(.{

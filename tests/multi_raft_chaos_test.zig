@@ -151,7 +151,7 @@ test "multi raft chaos: durable replica restarts and catches up" {
     defer machine_two.deinit();
     var machine_three_before = raft.MockStateMachine.init(allocator);
     defer machine_three_before.deinit();
-    const cluster_id = [_]u8{0x41} ** 16;
+    const cluster_id = @as([16]u8, @splat(0x41));
     const peers = [_]raft.Peer{
         .{ .id = 1, .context = "node-1" },
         .{ .id = 2, .context = "node-2" },

@@ -2,7 +2,7 @@ const std = @import("std");
 const raft = @import("raftz");
 
 const allocator = std.heap.smp_allocator;
-const cluster_id = [_]u8{7} ** 16;
+const cluster_id = @as([16]u8, @splat(7));
 
 const GroupOperationCapture = struct {
     completed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),

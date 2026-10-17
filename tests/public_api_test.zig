@@ -186,7 +186,7 @@ test "memory storage vtable wiring is callable" {
 
     var writable = storage.asWritableStorage();
     try std.testing.expectEqual(@as(u64, 1), try writable.firstIndex());
-    try writable.setMembershipState(allocator, .{}, .{ .cluster_id = .{1} ++ .{0} ** 15 }, 0);
+    try writable.setMembershipState(allocator, .{}, .{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)) }, 0);
     var state = try writable.initialState(allocator);
     defer state.deinit(allocator);
     try std.testing.expect(state.cluster_membership != null);
