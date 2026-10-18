@@ -1479,7 +1479,11 @@ test "wal: entry and conf state codecs clean up allocation failures" {
 }
 
 test "wal: state updates clean up allocation failures" {
-    const allocator = std.testing.allocator;
+    var allocator = std.testing.allocator;
+    var vtable = allocator.vtable.*;
+    vtable.resize = std.mem.Allocator.noResize;
+    vtable.remap = std.mem.Allocator.noRemap;
+    allocator.vtable = &vtable;
     const Check = struct {
         fn saveConfState(failing_allocator: std.mem.Allocator) !void {
             var fixture = try fs_testing.FsFixture.init(failing_allocator, .real);
