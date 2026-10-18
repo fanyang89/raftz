@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-#MISE description="Validate GitHub Actions workflows"
+#MISE description="Validate GitHub Actions workflows and CI scripts"
 set -euo pipefail
 
-exec actionlint "$@"
+actionlint "$@"
+for script in scripts/*.sh; do
+    bash -n "$script"
+done
+python3 -B -m unittest discover -s tests/ci -v

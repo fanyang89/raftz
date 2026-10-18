@@ -4,4 +4,3 @@ set -euo pipefail
 
 mise run fmt-check
 mise run ci-lint
-mise run ci-lint-buildkite

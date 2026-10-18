@@ -28,11 +28,8 @@ jobs:
       - name: Install mise tools
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
 
-      - name: Check formatting
-        run: mise run fmt-check
-
-      - name: Validate workflows
-        run: mise run ci-lint
+      - name: Validate formatting, workflows, and CI scripts
+        run: mise run ci-lint-all
 
   core-test:
     name: Core (${{ matrix.arch }}, ${{ matrix.optimize }})
@@ -106,6 +103,14 @@ jobs:
 
       - name: Generate coverage
         run: mise run coverage
+
+      - name: Archive coverage reports
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coverage
+          if-no-files-found: ignore
+          path: zig-out/coverage/
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0

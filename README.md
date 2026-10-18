@@ -114,7 +114,7 @@ for the processing order and ownership contracts.
 | --- | --- |
 | Linux x86_64 | Continuously tested in Debug and ReleaseSafe |
 | Linux arm64 | Automated coverage paused |
-| macOS arm64 | Planned Buildkite coverage; not enabled |
+| macOS arm64 | Not covered by CI |
 | Core Raft, ReadIndex, learners, joint consensus | Supported |
 | MemoryStorage, WAL, snapshots, restart | Supported |
 | Multi-Raft quotas, scheduling, durable migration, and metrics | Supported MVP |
@@ -143,7 +143,7 @@ Lower-level modules remain available for experimentation and may evolve before 1
 - [Operations](docs/operations.md): ops reports and upgrade version policy
 - [Testing](docs/testing.md): suites, fuzzing, fault injection, and upstream inventory
 - [Development](docs/development.md): tasks, build options, profiling, and coverage
-- [Buildkite CI](docs/buildkite.md): hosted queues, parallel migration, and cutover checks
+- [GitHub Actions CI](docs/ci.md): required checks, nightly fuzzing, and artifacts
 
 ## Development
 
