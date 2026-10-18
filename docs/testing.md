@@ -63,9 +63,8 @@ mise run test-ubsan
 ```
 
 CI runs Debug and ReleaseSafe on Linux x86_64. Linux ARM64 coverage is paused.
-Buildkite macOS ARM64 coverage is planned but not enabled; it is not equivalent
-to Linux ARM64 validation. TSan and C undefined
-behavior detection run as separate Linux jobs.
+macOS ARM64 is not covered by CI. TSan and C undefined behavior detection run
+as separate Linux jobs. See [GitHub Actions CI](ci.md) for workflows and artifacts.
 
 Fast Raft invariant checks are enabled by default in Debug and ReleaseSafe.
 Override them explicitly with `-Dinvariant-checks=false` or
