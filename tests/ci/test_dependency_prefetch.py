@@ -1,10 +1,12 @@
 import hashlib
+import io
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import os
 from pathlib import Path
 import re
 import shlex
 import subprocess
+import tarfile
 import tempfile
 import threading
 import unittest
@@ -23,7 +25,13 @@ class DependencyPrefetchTests(unittest.TestCase):
         self.bin = self.base / "bin"
         self.bin.mkdir()
         self.calls = self.base / "calls"
-        self.payload = b"pinned dependency fixture\n"
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as archive:
+            content = b"pinned dependency fixture\n"
+            member = tarfile.TarInfo("fixture-commit/source.txt")
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+        self.payload = payload.getvalue()
         self.responses = [200]
         self.requests = 0
         case = self
@@ -61,7 +69,8 @@ class DependencyPrefetchTests(unittest.TestCase):
         self.stub("zig", '''
 printf '%s\n' "$*" >> "$CALL_LOG"
 if [[ $1 == fetch ]]; then
-    [[ -f $2 ]]
+    [[ -d $2 && -f $2/source.txt ]]
+    [[ ! -d $2/fixture-commit ]]
     printf '%s\n' "$ACTUAL_HASH"
     exit 0
 fi

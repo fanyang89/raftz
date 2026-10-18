@@ -34,8 +34,12 @@ fetch_package() {
         fi
     fi
 
+    local source="$work_dir/$name"
+    mkdir "$source"
+    tar --extract --gzip --file "$archive" --directory "$source" --strip-components=1
+
     local actual_hash
-    actual_hash=$(zig fetch "$archive")
+    actual_hash=$(zig fetch "$source")
     if [[ "$actual_hash" != "$package_hash" ]]; then
         printf 'unexpected Zig package hash for %s: got %s, expected %s\n' \
             "$name" "$actual_hash" "$package_hash" >&2
