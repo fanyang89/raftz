@@ -169,7 +169,7 @@ pub const NodeProcess = struct {
     pub fn start(self: *NodeProcess, startup_mode: raft.StartupMode) !void {
         if (self.raftor != null or self.storage != null) return error.AlreadyStarted;
         var dir_buffer: [64]u8 = undefined;
-        const dir = try std.fmt.bufPrintZ(&dir_buffer, "raft-vopr-node-{}", .{self.config.nodeId()});
+        const dir = try std.mem.printSentinel(&dir_buffer, "raft-vopr-node-{}", .{self.config.nodeId()}, 0);
         const storage = try raft.WALStorage.openWithFs(self.allocator, dir, self.wal_fs.fileSystem());
         self.storage = storage;
         errdefer {

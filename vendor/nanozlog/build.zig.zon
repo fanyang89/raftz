@@ -3,11 +3,11 @@
     .version = "0.1.0",
     .dependencies = .{
         .zeit = .{
-            .url = "git+https://github.com/rockorager/zeit?ref=v0.9.0#b1c1c2fcbc71fd7799a316bbcf0ff88d06d80ccc",
-            .hash = "zeit-0.9.0-5I6bk2m9AgBSMH8-L6rYJkwuQAyhXplnfxnvTSGzVHUR",
+            .url = "https://codeload.github.com/rockorager/zeit/tar.gz/06bb7b462b4218770fb5438ebe6b0c0c5ef18888",
+            .hash = "zeit-0.10.0-5I6bkxS-AgAaI3lI3RsXsWnPw7sMCqJKoFnSB8_QRAoo",
         },
     },
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",

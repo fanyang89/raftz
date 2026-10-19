@@ -43,7 +43,7 @@ RAFTZ_JEPSEN_BINARY="$PWD/examples/raft-sqlite/zig-out/bin/raft-sqlite" \
 Prerequisites for real runs:
 
 - Linux Docker daemon, Compose with `create`, `cp`, and `up --wait`; Bash,
-  `timeout`, `ssh-keygen`, `sha256sum`, and Zig 0.16.0 on the runner.
+  `timeout`, `ssh-keygen`, `sha256sum`, and Zig 0.17.0 on the runner.
 - Network access to pinned base images, Maven Central/Clojars, Ubuntu packages,
   and raftz's pinned build dependencies on first build.
 - Sufficient resources for Java (`-Xmx2g`), three nodes, and Zig compilation.

@@ -577,7 +577,7 @@ fn lock(mutex: *std.atomic.Mutex) void {
 // KCOV_EXCL_START
 fn validTestConfig() Config {
     return .{
-        .identity = .{ .cluster_id = [_]u8{1} ** 16, .node_id = 1 },
+        .identity = .{ .cluster_id = @as([16]u8, @splat(1)), .node_id = 1 },
         .listen_addr = "127.0.0.1:0",
     };
 }
@@ -594,7 +594,7 @@ test "grpc multi transport validates configuration" {
     config.identity.node_id = 0;
     try std.testing.expectError(error.InvalidNodeId, config.validate());
     config = validTestConfig();
-    config.identity.cluster_id = .{0} ** 16;
+    config.identity.cluster_id = @as([16]u8, @splat(0));
     try std.testing.expectError(error.ClusterIdRequired, config.validate());
     config = validTestConfig();
     config.listen_addr = "";

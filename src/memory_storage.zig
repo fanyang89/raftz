@@ -299,7 +299,8 @@ pub const MemoryStorage = struct {
             actual_len = slice.len;
         }
         // Shrink the allocation if LimitSize trimmed entries.
-        return allocator.realloc(result, actual_len) catch return result[0..actual_len];
+        if (actual_len == result.len) return result;
+        return try allocator.realloc(result, actual_len);
     }
 
     pub fn setEntries(self: *MemoryStorage, allocator: std.mem.Allocator, src: []const Entry) !void {
@@ -862,7 +863,7 @@ test "memory storage atomically owns membership state" {
     try storage.asWritableStorage().setMembershipState(
         allocator,
         .{ .voters = &voters },
-        .{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers },
+        .{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers },
         7,
     );
 
@@ -888,7 +889,7 @@ test "memory storage membership failures do not mutate state" {
     var peers = [_]cluster_membership_mod.PeerEndpoint{
         .{ .node_id = 1, .address = @constCast("node-1") },
     };
-    const membership = ClusterMembership{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers };
+    const membership = ClusterMembership{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers };
     try storage.setMembershipState(allocator, .{ .voters = @constCast(&[_]u64{1}) }, membership, 4);
 
     try std.testing.expectError(
@@ -906,7 +907,7 @@ test "memory storage membership failures do not mutate state" {
     try std.testing.expectError(error.OutOfMemory, storage.setMembershipState(
         fixed.allocator(),
         .{ .voters = @constCast(&[_]u64{2}) },
-        .{ .cluster_id = .{2} ++ .{0} ** 15, .peers = &replacement_peers },
+        .{ .cluster_id = .{2} ++ @as([15]u8, @splat(0)), .peers = &replacement_peers },
         6,
     ));
     try std.testing.expectEqualSlices(u64, &.{1}, storage.core.raft_state.conf_state.voters);
@@ -933,7 +934,7 @@ test "memory storage membership allocation failures clean up" {
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{
         ConfState{ .voters = @constCast(&[_]u64{ 1, 2 }) },
-        ClusterMembership{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers },
+        ClusterMembership{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers },
     });
 }
 
@@ -947,7 +948,7 @@ test "memory storage snapshot membership updates state atomically" {
     try storage.setMembershipState(
         allocator,
         .{ .voters = @constCast(&[_]u64{1}) },
-        .{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &old_peers },
+        .{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &old_peers },
         1,
     );
 
@@ -956,7 +957,7 @@ test "memory storage snapshot membership updates state atomically" {
         .{ .node_id = 2, .address = @constCast("node-2") },
     };
     const membership = try (ClusterMembership{
-        .cluster_id = .{2} ++ .{0} ** 15,
+        .cluster_id = .{2} ++ @as([15]u8, @splat(0)),
         .peers = &peers,
     }).encode(allocator);
     defer allocator.free(membership);
@@ -987,7 +988,7 @@ test "memory storage rejects missing and mismatched snapshot membership without 
     var peers = [_]cluster_membership_mod.PeerEndpoint{
         .{ .node_id = 1, .address = @constCast("node-1") },
     };
-    const membership = ClusterMembership{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers };
+    const membership = ClusterMembership{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers };
     try storage.setMembershipState(allocator, .{ .voters = @constCast(&[_]u64{1}) }, membership, 2);
 
     try std.testing.expectError(error.MissingClusterMembership, storage.applySnapshot(allocator, .{
@@ -1023,7 +1024,7 @@ test "memory storage local snapshot applies membership and compacts" {
         .{ .node_id = 1, .address = @constCast("node-1") },
     };
     const membership = try (ClusterMembership{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = &peers,
     }).encode(allocator);
     defer allocator.free(membership);
@@ -1079,7 +1080,7 @@ test "memory storage snapshot membership allocation failures clean up" {
         .{ .node_id = 2, .address = @constCast("node-2") },
     };
     const membership = try (ClusterMembership{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = &peers,
     }).encode(std.testing.allocator);
     defer std.testing.allocator.free(membership);
@@ -1111,7 +1112,7 @@ test "memory storage local snapshot allocation failures clean up" {
         .{ .node_id = 2, .address = @constCast("node-2") },
     };
     const membership = try (ClusterMembership{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = &peers,
     }).encode(std.testing.allocator);
     defer std.testing.allocator.free(membership);
@@ -1140,7 +1141,7 @@ test "memory storage snapshot result cleans up allocation failures" {
         .{ .node_id = 1, .address = @constCast("node-1") },
     };
     const membership = try (ClusterMembership{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = &peers,
     }).encode(std.testing.allocator);
     defer std.testing.allocator.free(membership);
@@ -1163,6 +1164,22 @@ test "memory storage entry reads clean up allocation failures" {
             }
         }
 
+        fn limitedEntries(allocator: std.mem.Allocator) !void {
+            var storage = MemoryStorage.init();
+            defer storage.deinit(allocator);
+            try storage.setEntries(allocator, &.{
+                .{ .index = 1, .term = 1, .data = @constCast("one"), .context = @constCast("first") },
+                .{ .index = 2, .term = 1, .data = @constCast("two"), .context = @constCast("second") },
+            });
+            const result = try storage.entries(allocator, 1, 3, 0, .{ .empty = .{ .can_async = false } });
+            defer {
+                for (result) |*entry| entry.deinit(allocator);
+                allocator.free(result);
+            }
+            try std.testing.expectEqual(@as(usize, 1), result.len);
+            try std.testing.expectEqualStrings("one", result[0].data);
+        }
+
         fn allEntries(allocator: std.mem.Allocator) !void {
             var storage = MemoryStorage.init();
             defer storage.deinit(allocator);
@@ -1178,6 +1195,7 @@ test "memory storage entry reads clean up allocation failures" {
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.entries, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.limitedEntries, .{});
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.allEntries, .{});
 }
 
@@ -1210,7 +1228,7 @@ test "memory storage legacy migration cleans up allocation failures" {
                 .{ .node_id = 1, .address = @constCast("old-node-1") },
             };
             const current = ClusterMembership{
-                .cluster_id = .{1} ++ .{0} ** 15,
+                .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
                 .peers = &current_peers,
                 .retired_node_ids = @constCast(&[_]u64{3}),
             };
@@ -1253,7 +1271,7 @@ test "memory storage migrates legacy membership atomically" {
         .{ .node_id = 1, .address = @constCast("old-node-1") },
     };
     const current = ClusterMembership{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = &current_peers,
         .retired_node_ids = @constCast(&[_]u64{3}),
     };
@@ -1283,7 +1301,7 @@ test "memory storage rejects invalid legacy migration without mutation" {
     var peers = [_]cluster_membership_mod.PeerEndpoint{
         .{ .node_id = 1, .address = @constCast("node-1") },
     };
-    const current = ClusterMembership{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peers };
+    const current = ClusterMembership{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peers };
     try std.testing.expectError(
         error.InvalidMembershipIndex,
         storage.migrateLegacyMembership(allocator, current, 5, null),
@@ -1306,7 +1324,7 @@ test "memory storage rejects invalid legacy migration without mutation" {
         error.LegacySnapshotMigrationRequired,
         storage.migrateLegacyMembership(allocator, current, 1, null),
     );
-    const wrong_cluster = ClusterMembership{ .cluster_id = .{2} ++ .{0} ** 15, .peers = &peers };
+    const wrong_cluster = ClusterMembership{ .cluster_id = .{2} ++ @as([15]u8, @splat(0)), .peers = &peers };
     try std.testing.expectError(
         error.InvalidClusterMembership,
         storage.migrateLegacyMembership(allocator, current, 1, wrong_cluster),

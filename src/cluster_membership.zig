@@ -730,7 +730,7 @@ test "effective members include joint voters and staged learners" {
         initialized += 1;
     }
     var membership = ClusterMembership{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = peers,
     };
     defer membership.deinit(allocator);
@@ -859,7 +859,7 @@ test "membership context codec rejects malformed data" {
     std.mem.writeInt(u64, bad[second_id_offset..][0..8], 1, .little);
     try std.testing.expectError(error.PeersNotSorted, decodeMembershipContext(allocator, bad));
 
-    var empty_address = [_]u8{'\x00'} ** (membership_context_header_size + encoded_peer_min_size);
+    var empty_address = @as([(membership_context_header_size + encoded_peer_min_size)]u8, @splat('\x00'));
     @memcpy(empty_address[0..4], membership_context_magic);
     std.mem.writeInt(u32, empty_address[4..8], membership_context_version, .little);
     std.mem.writeInt(u32, empty_address[8..12], 1, .little);
@@ -899,7 +899,7 @@ test "membership context codec allocation failures clean up" {
 test "derive membership adds voters learners and supports legacy single add" {
     const allocator = std.testing.allocator;
     var current_peers = [_]PeerEndpoint{.{ .node_id = 1, .address = @constCast("node-1") }};
-    const current = ClusterMembership{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &current_peers };
+    const current = ClusterMembership{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &current_peers };
     const previous = ConfState{ .voters = @constCast(&[_]u64{1}) };
     const next = ConfState{
         .voters = @constCast(&[_]u64{ 1, 2 }),
@@ -941,7 +941,7 @@ test "derive membership updates only effective nodes" {
         .{ .node_id = 1, .address = @constCast("old-1") },
         .{ .node_id = 2, .address = @constCast("old-2") },
     };
-    const current = ClusterMembership{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &current_peers };
+    const current = ClusterMembership{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &current_peers };
     const state = ConfState{ .voters = @constCast(&[_]u64{ 1, 2 }) };
     var endpoint = [_]PeerEndpoint{.{ .node_id = 2, .address = @constCast("new-2") }};
     const encoded = try (MembershipContext{ .endpoints = &endpoint }).encode(allocator);
@@ -971,7 +971,7 @@ test "derive membership retains joint members and retires only after leave" {
         .{ .node_id = 1, .address = @constCast("node-1") },
         .{ .node_id = 2, .address = @constCast("node-2") },
     };
-    const current = ClusterMembership{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &current_peers };
+    const current = ClusterMembership{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &current_peers };
     const previous = ConfState{ .voters = @constCast(&[_]u64{ 1, 2 }) };
     const joint_state = ConfState{
         .voters = @constCast(&[_]u64{1}),
@@ -997,7 +997,7 @@ test "derive membership retains learners next and retired remove is idempotent" 
         .{ .node_id = 2, .address = @constCast("node-2") },
     };
     const current = ClusterMembership{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = &peers,
         .retired_node_ids = @constCast(&[_]u64{3}),
     };
@@ -1023,7 +1023,7 @@ test "derive membership rejects retired re-add and invalid endpoint mappings" {
     const allocator = std.testing.allocator;
     var peer = [_]PeerEndpoint{.{ .node_id = 1, .address = @constCast("node-1") }};
     const current = ClusterMembership{
-        .cluster_id = .{1} ++ .{0} ** 15,
+        .cluster_id = .{1} ++ @as([15]u8, @splat(0)),
         .peers = &peer,
         .retired_node_ids = @constCast(&[_]u64{2}),
     };
@@ -1085,7 +1085,7 @@ test "derive membership allocation failures are atomic" {
 
     const allocator = std.testing.allocator;
     var peer = [_]PeerEndpoint{.{ .node_id = 1, .address = @constCast("node-1") }};
-    const current = ClusterMembership{ .cluster_id = .{1} ++ .{0} ** 15, .peers = &peer };
+    const current = ClusterMembership{ .cluster_id = .{1} ++ @as([15]u8, @splat(0)), .peers = &peer };
     const previous = ConfState{ .voters = @constCast(&[_]u64{1}) };
     const next = ConfState{ .voters = @constCast(&[_]u64{ 1, 2 }) };
     var endpoint = [_]PeerEndpoint{.{ .node_id = 2, .address = @constCast("node-2") }};

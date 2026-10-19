@@ -2,7 +2,7 @@ const std = @import("std");
 const fs_mod = @import("../fs.zig");
 const fs_testing = @import("../fs/testing.zig");
 
-const Crc32Iscsi = std.hash.crc.Crc32Iscsi;
+const Crc32Iscsi = std.hash.crc.@"CRC-32/ISCSI";
 
 const metadata_magic: u32 = 0x4D455441;
 const format_version: u32 = 4;
@@ -211,7 +211,7 @@ fn readLength(data: []const u8, offset: *usize) !usize {
 fn makePath(allocator: std.mem.Allocator, dir: [:0]const u8, basename: []const u8) ![:0]u8 {
     const path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, basename });
     defer allocator.free(path);
-    return allocator.dupeZ(u8, path);
+    return allocator.dupeSentinel(u8, path, 0);
 }
 
 // KCOV_EXCL_START

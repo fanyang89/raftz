@@ -34,8 +34,12 @@ fetch_package() {
         fi
     fi
 
+    local source="$work_dir/$name"
+    mkdir "$source"
+    tar --extract --gzip --file "$archive" --directory "$source" --strip-components=1
+
     local actual_hash
-    actual_hash=$(zig fetch "$archive")
+    actual_hash=$(zig fetch "$source")
     if [[ "$actual_hash" != "$package_hash" ]]; then
         printf 'unexpected Zig package hash for %s: got %s, expected %s\n' \
             "$name" "$actual_hash" "$package_hash" >&2
@@ -44,10 +48,10 @@ fetch_package() {
 }
 
 fetch_package \
-    grpc-lite-c0d2207b \
-    https://codeload.github.com/fanyang89/grpc-lite/tar.gz/c0d2207bdb426243327a0f4f41d3983ae4e53e30 \
+    grpc-lite-db3c400b \
+    https://codeload.github.com/fanyang89/grpc-lite/tar.gz/db3c400bf70419742ebcb42fe316ba8b754b4975 \
     - \
-    grpc_lite-0.4.0-BcwY0BKEFQCZukihgaM1osxJ0WrNVtc5nBTtjU3V9PKW
+    grpc_lite-0.4.0-BcwY0LD8KQDV9CoDiLNJ5OaDpyPBiV-4P5H_VD3Bsr_J
 
 fetch_package \
     crc32c-2bbb3be4 \
@@ -56,22 +60,10 @@ fetch_package \
     N-V-__8AAPSAAQAtvOlJae6eMS2dtyeTGalfGt9JsXB9mYZj
 
 fetch_package \
-    marionette-v0.6.0 \
-    https://codeload.github.com/sb2bg/marionette/tar.gz/refs/tags/v0.6.0 \
+    zeit-06bb7b46 \
+    https://codeload.github.com/rockorager/zeit/tar.gz/06bb7b462b4218770fb5438ebe6b0c0c5ef18888 \
     - \
-    marionette-0.6.0-jTrEFDEmGwAsls0lMrAb9uRDOWApe_5DSJkDfE6pTQwb
-
-fetch_package \
-    zeit-b1c1c2fc \
-    https://codeload.github.com/rockorager/zeit/tar.gz/b1c1c2fcbc71fd7799a316bbcf0ff88d06d80ccc \
-    - \
-    zeit-0.9.0-5I6bk2m9AgBSMH8-L6rYJkwuQAyhXplnfxnvTSGzVHUR
-
-fetch_package \
-    libxev-b0650f08 \
-    https://codeload.github.com/mitchellh/libxev/tar.gz/b0650f082458226860ed7ab0fc7c9c73823c8950 \
-    - \
-    libxev-0.0.0-86vtcxkOFACqPXUTAPuq5i0xpDYWU5G5RfrYQXxlUT26
+    zeit-0.10.0-5I6bkxS-AgAaI3lI3RsXsWnPw7sMCqJKoFnSB8_QRAoo
 
 fetch_package \
     nghttp2-68cb6900 \
@@ -92,16 +84,16 @@ fetch_package \
     N-V-__8AAHSUBAA_Vn8NXM2L9F21QFvrTIxbH9yvxs5cO-lY
 
 fetch_package \
-    nanozlog-e693c119 \
-    https://codeload.github.com/wyzdwdz/nanozlog/tar.gz/e693c11976d55ba0a5b8deeaaaf9f1c5cc30eba9 \
-    dc8335550f242a7db3c1c8d80ac832bd1777ffeaea7da65187411fa4c8928328 \
-    nanozlog-0.1.0-5UtdH535AADW7HUBpfLboKJkdB1IVYaqz7YFQ2dHIcqL
+    nanozlog-a1ad3d52 \
+    https://codeload.github.com/wyzdwdz/nanozlog/tar.gz/a1ad3d52aec355c2dba7568fe18ec440937d4f81 \
+    - \
+    nanozlog-0.1.0-5UtdH6f6AAACQMkivAT4xIQtfBDFG3JACCJRpnY5Up3P
 
 fetch_package \
-    zig-protobuf-b794f993 \
-    https://codeload.github.com/Arwalk/zig-protobuf/tar.gz/b794f99323cead7f1794ae68554d0311cc309857 \
+    zig-protobuf-e9e18c76 \
+    https://codeload.github.com/Arwalk/zig-protobuf/tar.gz/e9e18c7664b8c950e5fc679259c968dd66ccc48b \
     - \
-    protobuf-5.0.0-0e82ahZiKwC5Yrh4psANoUzrV_H4CQU1EsOIY9Zdyap_
+    protobuf-7.0.0-0e82aqFhNADVgEgPYPI7ddEg_dzhphBToYgkjQTrMKWv
 
 for attempt in 1 2 3; do
     if zig build fuzz-smoke fuzz-wal-crash --fetch=needed; then

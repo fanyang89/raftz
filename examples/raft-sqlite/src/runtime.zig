@@ -290,7 +290,7 @@ pub const Runtime = struct {
 };
 
 fn contains(values: []const u64, expected: u64) bool {
-    return std.mem.containsAtLeastScalar(u64, values, 1, expected);
+    return std.mem.containsAtLeastScalar(u64, values, expected, 1);
 }
 
 fn addressInUse(membership: *const raft.ClusterMembership, node_id: u64, address: []const u8) bool {

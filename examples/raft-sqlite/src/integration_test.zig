@@ -68,7 +68,7 @@ test "single-node restart reuses durable SQLite state without replaying its suff
     defer allocator.free(data_dir);
     const database_path = try std.fmt.allocPrintSentinel(allocator, "{s}/state.sqlite3", .{root_path}, 0);
     defer allocator.free(database_path);
-    const cluster_id: raft.ClusterId = .{1} ++ .{0} ** 15;
+    const cluster_id: raft.ClusterId = .{1} ++ @as([15]u8, @splat(0));
 
     var config: raft.RaftorConfig = .{};
     config.raft.id = 1;
@@ -143,7 +143,7 @@ test "restart rejects SQLite state ahead of the durable Raft commit" {
     defer allocator.free(data_dir);
     const database_path = try std.fmt.allocPrintSentinel(allocator, "{s}/state.sqlite3", .{root_path}, 0);
     defer allocator.free(database_path);
-    const cluster_id: raft.ClusterId = .{2} ++ .{0} ** 15;
+    const cluster_id: raft.ClusterId = .{2} ++ @as([15]u8, @splat(0));
     var config: raft.RaftorConfig = .{};
     config.raft.id = 1;
     config.cluster_id = cluster_id;

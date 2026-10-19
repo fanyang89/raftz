@@ -116,7 +116,7 @@ const StaticLogInfo = struct {
 /// - `log_q_full_cb_args`: An anyopaque pointer used as log_q_full_cb callback function args (defaults to undefined).
 /// - `print_meta_cb`: A custom callback function to format and print log metadata. (defaults to builtin function).
 pub const Config = struct {
-    min_level: Level = if (builtin.mode == .Debug) .debug else .info,
+    min_level: Level = if (builtin.mode == .debug) .debug else .info,
     queue_size: u32 = 1 << 20,
     flush_delay: i64 = 3_000_000_000,
     polling_interval: i64 = 1_000_000_000,
@@ -212,7 +212,7 @@ pub fn log(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    if (@intFromEnum(message_level) > @intFromEnum(self._config.min_level)) return;
+    if (@backingInt(message_level) > @backingInt(self._config.min_level)) return;
 
     const Args = @TypeOf(args);
 
@@ -339,12 +339,11 @@ fn generateFormatTo(comptime Args: type, comptime format: []const u8) FormatToFn
 
             const type_info = @typeInfo(Args);
 
-            const fields_info = type_info.@"struct".fields;
+            const fields_info = type_info.@"struct";
 
-            inline for (fields_info) |field| {
-                if (field.is_comptime) continue;
+            inline for (fields_info.field_names, fields_info.field_types, fields_info.field_attrs) |field_name, T, attrs| {
+                if (attrs.@"comptime") continue;
 
-                const T = field.type;
                 const info = @typeInfo(T);
 
                 switch (info) {
@@ -352,7 +351,7 @@ fn generateFormatTo(comptime Args: type, comptime format: []const u8) FormatToFn
                     .float, .int, .bool, .@"enum", .error_set => {
                         const size = @sizeOf(T);
                         const ptr: *align(1) const T = @ptrCast(data[idx..].ptr);
-                        @field(args, field.name) = ptr.*;
+                        @field(args, field_name) = ptr.*;
                         idx += size;
                     },
                     .pointer => |p| {
@@ -362,14 +361,14 @@ fn generateFormatTo(comptime Args: type, comptime format: []const u8) FormatToFn
                             const len = ptr.*;
                             idx += size;
 
-                            @field(args, field.name).len = len;
-                            @field(args, field.name).ptr = @ptrCast(@constCast(data[idx..].ptr));
+                            @field(args, field_name).len = len;
+                            @field(args, field_name).ptr = @ptrCast(@constCast(data[idx..].ptr));
                             idx += len;
                             if (p.sentinel() != null) idx += 1;
                         } else if (p.size == .one) {
                             const size = @sizeOf(T);
                             const ptr: *align(1) const T = @ptrCast(data[idx..].ptr);
-                            @field(args, field.name) = ptr.*;
+                            @field(args, field_name) = ptr.*;
                             idx += size;
                         } else unreachable;
                     },
@@ -394,15 +393,14 @@ fn getArgsSize(args: anytype) usize {
         @compileError("expected tuple or struct argument, found " ++ @typeName(Args));
     }
 
-    const fields_info = type_info.@"struct".fields;
+    const fields_info = type_info.@"struct";
 
-    inline for (fields_info) |field| {
-        if (field.is_comptime) continue;
+    inline for (fields_info.field_names, fields_info.field_types, fields_info.field_attrs) |field_name, T, attrs| {
+        if (attrs.@"comptime") continue;
 
-        const T = field.type;
         const info = @typeInfo(T);
 
-        const val = @field(args, field.name);
+        const val = @field(args, field_name);
 
         switch (info) {
             .void => {},
@@ -439,15 +437,14 @@ fn encodeArgs(out: []u8, args: anytype) void {
     const Args = @TypeOf(args);
     const type_info = @typeInfo(Args);
 
-    const fields_info = type_info.@"struct".fields;
+    const fields_info = type_info.@"struct";
 
-    inline for (fields_info) |field| {
-        if (field.is_comptime) continue;
+    inline for (fields_info.field_names, fields_info.field_types, fields_info.field_attrs) |field_name, T, attrs| {
+        if (attrs.@"comptime") continue;
 
-        const T = field.type;
         const info = @typeInfo(T);
 
-        const val = @field(args, field.name);
+        const val = @field(args, field_name);
 
         switch (info) {
             .void => {},
@@ -573,7 +570,7 @@ fn defaultPrintMeta(writer: *std.Io.Writer, meta: Meta) std.Io.Writer.Error!void
             meta.microsecond,
             meta.src.file,
             meta.src.line,
-            @tagName(@as(PrintLevel, @enumFromInt(@intFromEnum(meta.level)))),
+            @tagName(@as(PrintLevel, @fromBackingInt(@intCast(@backingInt(meta.level))))),
             meta.thread_id,
         },
     );
@@ -598,7 +595,7 @@ fn handleLog(
     const meta = Meta{
         .timestamp = timestamp,
         .year = time.year,
-        .month = @intFromEnum(time.month),
+        .month = @backingInt(time.month),
         .day = time.day,
         .hour = time.hour,
         .minute = time.minute,

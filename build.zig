@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
         bool,
         "invariant_checks",
         b.option(bool, "invariant-checks", "Enable fast Raft invariant checks") orelse
-            (optimize == .Debug or optimize == .ReleaseSafe),
+            (optimize == .debug or optimize == .safe),
     );
     raftz_options.addOption(bool, "sanitize_thread", sanitizers.thread orelse false);
 
@@ -431,7 +431,7 @@ pub fn build(b: *std.Build) void {
         .root_module = raft_benchmark_module,
     });
     const run_raft_benchmark = b.addRunArtifact(raft_benchmark);
-    if (b.args) |args| run_raft_benchmark.addArgs(args);
+    run_raft_benchmark.addPassthruArgs();
     const raft_benchmark_step = b.step("bench-raft", "Benchmark the single-node Raft pipeline");
     raft_benchmark_step.dependOn(&run_raft_benchmark.step);
     const install_raft_benchmark = b.addInstallArtifact(raft_benchmark, .{});
@@ -487,18 +487,18 @@ fn addTestRun(
     tests: *std.Build.Step.Compile,
     coverage: *Coverage,
 ) *std.Build.Step.Run {
-    if (coverage.enabled) {
+    const run = if (coverage.enabled) blk: {
         tests.use_llvm = true;
-        tests.setExecCmd(&.{
+        const run = b.addSystemCommand(&.{
             "kcov",
             "--include-path=src",
             "--exclude-line=KCOV_EXCL_LINE",
             "--exclude-region=KCOV_EXCL_START:KCOV_EXCL_STOP",
             "zig-out/coverage",
-            null,
         });
-    }
-    const run = b.addRunArtifact(tests);
+        run.addArtifactArg(tests);
+        break :blk run;
+    } else b.addRunArtifact(tests);
     if (coverage.enabled) {
         if (coverage.previous_run) |previous| run.step.dependOn(previous);
         coverage.previous_run = &run.step;
@@ -534,6 +534,12 @@ fn addCrc32c(
         .HAVE_WEAK_GETAUXVAL = false,
         .CRC32C_TESTS_BUILT_WITH_GLOG = false,
     });
+    const bindings = b.addTranslateC(.{
+        .root_source_file = dependency.path("include/crc32c/crc32c.h"),
+        .target = target,
+        .optimize = module.optimize.?,
+    });
+    module.addImport("crc32c_bindings", bindings.createModule());
     module.addConfigHeader(config_header);
     module.addIncludePath(dependency.path("include"));
     module.addIncludePath(dependency.path("src"));

@@ -4,6 +4,7 @@ set -euo pipefail
 input=$1
 output=$2
 zig=$3
+shift 3
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/libelection-static.XXXXXX")
 cleanup() {
     rm -rf "$work_dir"
@@ -42,8 +43,10 @@ flatten_member() {
     fi
 }
 
-while IFS= read -r member; do
-    flatten_member "$input" "$member"
-done < <("$zig" ar t "$input")
+for archive in "$input" "$@"; do
+    while IFS= read -r member; do
+        flatten_member "$archive" "$member"
+    done < <("$zig" ar t "$archive")
+done
 
 "$zig" ar rcs "$output" "$work_dir"/object-*.o
