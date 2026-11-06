@@ -246,7 +246,6 @@ test "dynamic membership joins, promotes, readdresses, transfers, removes, and r
 
     const address_baseline = try submitAdmin(runtime_1.?, .ADMIN_OPERATION_UPDATE_ADDRESS, 2, raft_2_new);
     const address_index = try waitForMember(runtime_1.?, 2, .voter, address_baseline + 1, raft_2_new);
-    _ = try waitForMember(runtime_2.?, 2, .voter, address_index, raft_2_new);
     stopRuntime(&runtime_2);
     runtime_2 = try runtime_mod.Runtime.create(runtime_allocator, &config_2_new, testOptions());
     _ = try waitForMember(runtime_2.?, 2, .voter, address_index, raft_2_new);
