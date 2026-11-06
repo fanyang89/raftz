@@ -38,7 +38,11 @@ Applications may provide another implementation through `Transport.VTable`.
 
 `Raftor.run()` processes proposals, ReadIndex requests, inbound messages, and
 peer events as they arrive. The single driver thread still owns all Raft
-mutation and callback execution. `tick_interval_ms` controls logical ticks
+mutation. Apply, read-confirmation, and timeout callbacks run on that thread.
+`stop()` invokes detached shutdown callbacks synchronously on its calling
+thread, potentially concurrently with normal callbacks on the driver.
+Callbacks must be thread-safe, must not block, and must not assume one fixed
+execution thread. `tick_interval_ms` controls logical ticks
 (100 ms by default, must be nonzero), independently of request processing.
 The driver checks its monotonic deadline between work batches. After a delayed
 tick it schedules the next interval from completion, without catch-up ticks.

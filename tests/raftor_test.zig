@@ -3976,24 +3976,36 @@ test "raftor: stopped drain breaks before later queued requests" {
     try std.testing.expectEqual(error.ShuttingDown, second.err.?);
 }
 
-test "raftor: tracking allocation failures complete proposal and read callbacks" {
+test "raftor: tracking allocation failures count as poll work across drain budgets" {
     const Kind = enum { proposal, read };
     for ([_]Kind{ .proposal, .read }) |kind| {
         var failing = std.testing.FailingAllocator.init(allocator, .{});
         const failing_allocator = failing.allocator();
         var machine = MockStateMachine.init(failing_allocator);
         defer machine.deinit();
-        const r = try Raftor.create(failing_allocator, makeConfig(1), machine.stateMachine());
+        var config = makeConfig(1);
+        config.proposal_drain_budget = 1;
+        config.read_index_drain_budget = 1;
+        const r = try Raftor.create(failing_allocator, config, machine.stateMachine());
         defer r.destroy();
-        var callback = ErrorTester{};
-        switch (kind) {
-            .proposal => try r.propose("queued", callback.proposalCallback()),
-            .read => try r.readIndex("queued", callback.readCallback()),
+        while (try r.poll()) {}
+        const initial_ticks = r.tick_count;
+        var callbacks: [3]ErrorTester = @splat(.{});
+        for (&callbacks) |*callback| {
+            switch (kind) {
+                .proposal => try r.propose("queued", callback.proposalCallback()),
+                .read => try r.readIndex("queued", callback.readCallback()),
+            }
         }
         failing.fail_index = failing.alloc_index;
-        _ = try r.tick();
-        try std.testing.expectEqual(error.OutOfMemory, callback.err.?);
-        failing.fail_index = std.math.maxInt(usize);
+        defer failing.fail_index = std.math.maxInt(usize);
+        for (&callbacks, 0..) |*callback, index| {
+            try std.testing.expect(try r.poll());
+            try std.testing.expectEqual(error.OutOfMemory, callback.err.?);
+            for (callbacks[index + 1 ..]) |pending| try std.testing.expect(!pending.completed);
+        }
+        try std.testing.expect(!try r.poll());
+        try std.testing.expectEqual(initial_ticks, r.tick_count);
     }
 }
 

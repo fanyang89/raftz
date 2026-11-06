@@ -783,6 +783,7 @@ pub const Raftor = struct {
                 self.lifecycle_mutex.unlock();
                 break;
             };
+            had_work = true;
             const track_error: ?Error = if (self.proposal_tracker.track(
                 item.ctx,
                 item.callback,
@@ -801,7 +802,6 @@ pub const Raftor = struct {
                 self.proposal_tracker.fail(item.ctx, e);
                 if (e != error.ProposalDropped) return e;
             };
-            had_work = true;
         }
 
         const read_timeout = if (self.config.read_index_timeout_ticks > 0) self.config.read_index_timeout_ticks else 0;
@@ -815,6 +815,7 @@ pub const Raftor = struct {
                 self.lifecycle_mutex.unlock();
                 break;
             };
+            had_work = true;
             const track_error: ?Error = if (self.proposal_tracker.trackRead(
                 item.ctx,
                 item.callback,
@@ -831,7 +832,6 @@ pub const Raftor = struct {
                 self.proposal_tracker.failRead(item.ctx, err);
                 return err;
             };
-            had_work = true;
         }
         return had_work;
     }
