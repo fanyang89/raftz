@@ -8,6 +8,7 @@ pub const PeerEventQueue = struct {
     };
 
     mutex: std.atomic.Mutex = .unlocked,
+    wakeup: ?*transport.Wakeup = null,
     items: std.ArrayList(Item) = .empty,
     head: usize = 0,
     max_events: usize,
@@ -36,6 +37,14 @@ pub const PeerEventQueue = struct {
         }
         if (self.head > 0 and self.items.items.len == self.items.capacity) self.compact();
         self.items.appendAssumeCapacity(.{ .event = event, .generation = generation });
+        if (self.wakeup) |wakeup| wakeup.notify();
+    }
+
+    pub fn setWakeup(self: *PeerEventQueue, wakeup: ?*transport.Wakeup) void {
+        lock(&self.mutex);
+        defer self.mutex.unlock();
+        self.wakeup = wakeup;
+        if (wakeup) |value| value.notify();
     }
 
     pub fn pop(self: *PeerEventQueue) ?transport.PeerEvent {

@@ -908,6 +908,64 @@ test "raftor: read index completes after apply" {
     try std.testing.expect(read_done);
 }
 
+test "raftor: continuous read notifications do not starve logical ticks" {
+    const thread_allocator = std.heap.smp_allocator;
+    var sm = MockStateMachine.init(thread_allocator);
+    defer sm.deinit();
+    var config = makeConfig(1);
+    config.tick_interval_ms = 10;
+    config.read_index_drain_budget = 1;
+    const r = try Raftor.create(thread_allocator, config, sm.stateMachine());
+    defer r.destroy();
+    try r.campaign();
+
+    const State = struct {
+        node: *Raftor,
+        done: std.atomic.Value(bool) = .init(false),
+        failure: ?anyerror = null,
+        reads: usize = 0,
+
+        fn read(ctx: *anyopaque, result: raft.ReadIndexResult) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (result == .err) return;
+            self.reads += 1;
+            if (self.node.tick_count >= 4) {
+                self.node.stop();
+                return;
+            }
+            self.node.readIndex("again", .{ .ctx = self, .function = read }) catch |err| {
+                self.failure = err;
+                self.node.stop();
+            };
+        }
+
+        fn run(self: *@This()) void {
+            self.node.run() catch |err| {
+                self.failure = err;
+            };
+            self.done.store(true, .release);
+        }
+    };
+    var state: State = .{ .node = r };
+    try r.readIndex("first", .{ .ctx = &state, .function = State.read });
+    const thread = try std.Thread.spawn(.{}, State.run, .{&state});
+    var joined = false;
+    defer if (!joined) {
+        r.stop();
+        thread.join();
+    };
+    const start = try raft.Wakeup.now();
+    while (!state.done.load(.acquire) and try raft.Wakeup.now() - start < std.time.ns_per_s) {
+        try std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .awake);
+    }
+    r.stop();
+    thread.join();
+    joined = true;
+    try std.testing.expect(state.failure == null);
+    try std.testing.expect(r.tick_count >= 4);
+    try std.testing.expect(state.reads > 4);
+}
+
 test "raftor: duplicate user read contexts use independent internal contexts" {
     var sm = MockStateMachine.init(allocator);
     defer sm.deinit();

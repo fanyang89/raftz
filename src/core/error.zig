@@ -61,6 +61,8 @@ pub const Error = error{
     IncarnationExhausted,
     ContextSequenceExhausted,
     EventLoopBusy,
+    EventLoopWaitFailed,
+    EventLoopClockFailed,
 
     // Multi-Raft host errors.
     InvalidGroupId,
@@ -199,6 +201,8 @@ pub fn name(e: Error) []const u8 {
         error.IncarnationExhausted => "IncarnationExhausted",
         error.ContextSequenceExhausted => "ContextSequenceExhausted",
         error.EventLoopBusy => "EventLoopBusy",
+        error.EventLoopWaitFailed => "EventLoopWaitFailed",
+        error.EventLoopClockFailed => "EventLoopClockFailed",
         error.InvalidGroupId => "InvalidGroupId",
         error.GroupAlreadyExists => "GroupAlreadyExists",
         error.GroupNotFound => "GroupNotFound",

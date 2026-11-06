@@ -16,6 +16,7 @@ The type-erased `Transport` vtable provides:
 | `setPeerEventCallback` | Register unreachable, snapshot-failure, and identity-rejection events. |
 | `pollOne` | Deliver at most one queued message or event on the Raft event loop. |
 | `identity` | Optionally expose the transport's cluster and local-node identity. |
+| `setWakeup` | Optionally register a borrowed `*raft.Wakeup` for driver notifications. |
 
 Foreign network threads must queue input rather than invoke Raft directly.
 Callbacks run only through `pollOne` on the owner event loop. Message ownership
@@ -32,6 +33,35 @@ clone or share retained data before `send` returns.
 | `GrpcLiteTransport` | Persistent raw-stream network transport. |
 
 Applications may provide another implementation through `Transport.VTable`.
+
+## Event-Driven Raftor
+
+`Raftor.run()` processes proposals, ReadIndex requests, inbound messages, and
+peer events as they arrive. The single driver thread still owns all Raft
+mutation and callback execution. `tick_interval_ms` controls logical ticks
+(100 ms by default, must be nonzero), independently of request processing.
+The driver checks its monotonic deadline between work batches. After a delayed
+tick it schedules the next interval from completion, without catch-up ticks.
+
+With `GrpcLiteTransport` or `NoopTransport`, an idle driver blocks on a Linux
+futex until notified or the next tick is due. Notifications coalesce. The
+driver resets the notification before inspecting queues, so an enqueue racing
+with entry into the wait remains observable. `stop()` also wakes the driver;
+the caller must join its driver thread before releasing borrowed resources.
+Synchronous storage and state-machine work can still delay the driver.
+
+Custom transports opt in through `Transport.VTable.set_wakeup`. Publish each
+inbound message or peer event before calling `Wakeup.notify()`. Registration
+must notify if work may already be queued. Synchronize registration and
+notification, and ensure clearing the registration waits for in-flight users
+of the borrowed pointer. Raftor registers before transport startup and clears
+the registration on startup failure or destruction. The built-in gRPC queues
+use their queue locks for this lifetime guarantee.
+
+Transports without this optional hook retain a bounded 1 ms polling fallback.
+`tick()` and `poll()` remain available for application-owned drivers and
+deterministic simulation; `poll()` never advances logical time. MultiRaftHost
+retains its existing cooperative driver.
 
 ## Shared Multi-Raft Transport
 

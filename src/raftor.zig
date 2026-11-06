@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const linux = std.os.linux;
+const Wakeup = @import("wakeup.zig").Wakeup;
 
 const error_model = @import("core/error.zig");
 const types = @import("core/types.zig");
@@ -229,6 +230,8 @@ test "leader service policy requires bounded leader-only requests" {
 /// is captured by the Storage vtable, this struct must not be moved after
 /// `init` returns. Callers should heap-allocate it via `create`.
 pub const Raftor = struct {
+    wakeup: Wakeup,
+    transport_notifies: bool,
     allocator: std.mem.Allocator,
     config: RaftorConfig,
 
@@ -370,6 +373,8 @@ pub const Raftor = struct {
         self.config = config;
         self.storage = dependencies.storage;
         self.transport = dependencies.transport;
+        self.wakeup = .{};
+        self.transport_notifies = false;
         self.lifecycle_mutex = .unlocked;
         self.lifecycle = .active;
         self.stop_requested = std.atomic.Value(bool).init(false);
@@ -383,6 +388,7 @@ pub const Raftor = struct {
         self.transport_stopped = false;
 
         try config.raft.validate();
+        if (config.tick_interval_ms == 0) return error.InvalidConfig;
         if (config.transport_poll_budget == 0) return error.InvalidConfig;
         if (config.max_queued_proposals == 0 or config.max_queued_proposal_bytes == 0) return error.InvalidConfig;
         if (config.proposal_drain_budget == 0) return error.InvalidConfig;
@@ -471,7 +477,9 @@ pub const Raftor = struct {
             .ctx = self,
             .function = onPeerEvent,
         });
+        self.transport_notifies = self.transport.setWakeup(&self.wakeup);
         self.transport.start() catch |err| {
+            _ = self.transport.setWakeup(null);
             self.transport.setMessageCallback(null);
             self.transport.setPeerEventCallback(null);
             self.transport.stop();
@@ -633,6 +641,7 @@ pub const Raftor = struct {
     }
 
     fn deinitInternal(self: *Raftor) void {
+        _ = self.transport.setWakeup(null);
         self.transport.setMessageCallback(null);
         self.transport.setPeerEventCallback(null);
         self.ready_processor.deinit();
@@ -842,16 +851,24 @@ pub const Raftor = struct {
         self.run_active.store(true, .release);
         self.lifecycle_mutex.unlock();
         defer self.run_active.store(false, .release);
+        const interval = self.config.tick_interval_ms *| std.time.ns_per_ms;
+        var next_tick = try Wakeup.now();
         while (!self.stop_requested.load(.acquire)) {
-            _ = self.tick() catch |err| {
+            self.wakeup.reset();
+            const tick_due = try Wakeup.now() >= next_tick;
+            const work = (if (tick_due) self.tick() else self.poll()) catch |err| {
                 spinLock(&self.lifecycle_mutex);
                 const clean_shutdown = err == error.ShuttingDown and self.terminal_error == null and self.lifecycle != .active;
                 self.lifecycle_mutex.unlock();
                 if (clean_shutdown) return;
                 return err;
             };
+            if (tick_due) next_tick = try Wakeup.now() +| interval;
             if (self.stop_requested.load(.acquire)) break;
-            self.sleepUntilNextTick();
+            if (work) continue;
+            const remaining = next_tick -| try Wakeup.now();
+            if (remaining == 0) continue;
+            try self.wakeup.wait(if (self.transport_notifies) remaining else @min(remaining, std.time.ns_per_ms));
         }
     }
 
@@ -861,6 +878,7 @@ pub const Raftor = struct {
         var batch: ?ShutdownBatch = null;
         spinLock(&self.lifecycle_mutex);
         self.stop_requested.store(true, .release);
+        self.wakeup.notify();
         if (self.lifecycle == .active) {
             self.lifecycle = .stopping;
             batch = self.detachRequestsLocked();
@@ -899,6 +917,7 @@ pub const Raftor = struct {
         defer self.lifecycle_mutex.unlock();
         if (self.lifecycle != .active) return error.ShuttingDown;
         try self.proposal_queue.push(data_copy, ctx_copy, callback);
+        self.wakeup.notify();
     }
 
     pub fn readIndex(self: *Raftor, ctx: []const u8, callback: proposal_tracker_mod.ReadIndexCallback) !void {
@@ -910,6 +929,7 @@ pub const Raftor = struct {
         defer self.lifecycle_mutex.unlock();
         if (self.lifecycle != .active) return error.ShuttingDown;
         try self.read_index_queue.push(ctx_copy, callback);
+        self.wakeup.notify();
     }
 
     // -----------------------------------------------------------------------
@@ -1256,6 +1276,7 @@ pub const Raftor = struct {
         spinLock(&self.lifecycle_mutex);
         if (self.terminal_error == null) self.terminal_error = err;
         self.stop_requested.store(true, .release);
+        self.wakeup.notify();
         if (self.lifecycle == .active) {
             self.lifecycle = .terminating;
             batch = self.detachRequestsLocked();
@@ -1361,16 +1382,6 @@ pub const Raftor = struct {
             self.lifecycle_mutex.unlock();
             if (!active and !transitioning) return;
             sleepNanoseconds(std.time.ns_per_ms);
-        }
-    }
-
-    fn sleepUntilNextTick(self: *const Raftor) void {
-        var remaining = self.config.tick_interval_ms *| std.time.ns_per_ms;
-        const max_sleep = 10 * std.time.ns_per_ms;
-        while (remaining > 0 and !self.stop_requested.load(.acquire)) {
-            const duration = @min(remaining, max_sleep);
-            sleepNanoseconds(duration);
-            remaining -= duration;
         }
     }
 };

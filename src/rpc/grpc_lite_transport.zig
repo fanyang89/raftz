@@ -285,6 +285,7 @@ pub const GrpcLiteTransport = struct {
     }
 
     pub const vtable: Transport.VTable = .{
+        .set_wakeup = setWakeupImpl,
         .start = startImpl,
         .stop = stopImpl,
         .add_peer = addPeerImpl,
@@ -295,6 +296,12 @@ pub const GrpcLiteTransport = struct {
         .poll_one = pollOneImpl,
         .identity = identityImpl,
     };
+
+    fn setWakeupImpl(context: *anyopaque, wakeup: ?*transport_mod.Wakeup) void {
+        const self: *GrpcLiteTransport = @ptrCast(@alignCast(context));
+        self.mailbox.setWakeup(wakeup);
+        self.peer_events.setWakeup(wakeup);
+    }
 
     pub fn transport(self: *GrpcLiteTransport) Transport {
         return .{ .ctx = self, .vtable = &vtable };
