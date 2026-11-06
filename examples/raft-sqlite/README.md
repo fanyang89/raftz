@@ -138,8 +138,9 @@ zig-out/bin/raft-sqlite query 127.0.0.1:8001 \
 zig-out/bin/raft-sqlite status 127.0.0.1:8001
 
 zig-out/bin/raft-sqlite update-address 127.0.0.1:8001 4 127.0.0.1:9014
-zig-out/bin/raft-sqlite status 127.0.0.1:8004
+zig-out/bin/raft-sqlite status 127.0.0.1:8001
 # Restart node 4 with --raft-listen 127.0.0.1:9014, then wait for catch-up.
+zig-out/bin/raft-sqlite status 127.0.0.1:8004
 zig-out/bin/raft-sqlite transfer-leader 127.0.0.1:8001 4
 zig-out/bin/raft-sqlite status 127.0.0.1:8004
 zig-out/bin/raft-sqlite remove 127.0.0.1:8004 1
@@ -150,10 +151,14 @@ Parameter forms are `null`, `int:42`, `real:3.14`, `text:value`, and
 `blob:00ff`. CLI responses are JSON. Followers return `failed_precondition`
 instead of forwarding requests.
 
-Apply an address update while the member is running, wait until that member's
-status reports the new address and membership index, then restart it on the new
-Raft listen address. Send membership changes and leadership transfers to the
-current leader. Snapshots may be requested from any member.
+Apply an address update while the member is running, wait until the leader's
+status reports the new address and an advanced membership index, then restart
+the member on the new Raft listen address. Wait for the restarted member to
+report that address and membership index before continuing. Applying the update
+switches the leader's outbound connection to the new address; the member may
+not receive the commit notification at its old address, so do not wait for it
+to apply the update before restarting. Send membership changes and leadership
+transfers to the current leader. Snapshots may be requested from any member.
 Leadership transfer success means the request was accepted; poll `status` for
 the new leader. Snapshot success means the local snapshot and compaction
 completed.

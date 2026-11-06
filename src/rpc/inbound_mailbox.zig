@@ -3,6 +3,7 @@
 const std = @import("std");
 const Error = @import("../core/error.zig").Error;
 const Message = @import("../core/types.zig").Message;
+const Wakeup = @import("../wakeup.zig").Wakeup;
 
 fn spinLock(mutex: *std.atomic.Mutex) void {
     while (!mutex.tryLock()) std.atomic.spinLoopHint();
@@ -24,6 +25,7 @@ pub const InboundMailbox = struct {
     };
 
     mutex: std.atomic.Mutex = .unlocked,
+    wakeup: ?*Wakeup = null,
     inbox: std.ArrayList(Item) = .empty,
     head: usize = 0,
     encoded_bytes: usize = 0,
@@ -56,6 +58,14 @@ pub const InboundMailbox = struct {
         if (self.head > 0 and self.inbox.items.len == self.inbox.capacity) self.compact();
         self.inbox.appendAssumeCapacity(.{ .message = message, .encoded_size = encoded_size });
         self.encoded_bytes += encoded_size;
+        if (self.wakeup) |wakeup| wakeup.notify();
+    }
+
+    pub fn setWakeup(self: *InboundMailbox, wakeup: ?*Wakeup) void {
+        spinLock(&self.mutex);
+        defer self.mutex.unlock();
+        self.wakeup = wakeup;
+        if (wakeup) |value| value.notify();
     }
 
     pub fn canAccept(self: *InboundMailbox, encoded_size: usize) bool {

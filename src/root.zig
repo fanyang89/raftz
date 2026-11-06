@@ -217,6 +217,7 @@ pub const PeerEventKind = transport_mod.PeerEventKind;
 pub const PeerEvent = transport_mod.PeerEvent;
 pub const PeerEventCallback = transport_mod.PeerEventCallback;
 pub const Transport = transport_mod.Transport;
+pub const Wakeup = transport_mod.Wakeup;
 pub const NoopTransport = transport_mod.NoopTransport;
 pub const GroupId = multi_transport_mod.GroupId;
 pub const RaftEnvelope = multi_transport_mod.Envelope;

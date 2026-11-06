@@ -12,6 +12,7 @@ const storage_mod = @import("storage.zig");
 
 const Error = error_model.Error;
 const Message = types.Message;
+pub const Wakeup = @import("wakeup.zig").Wakeup;
 
 pub const TransportIdentity = struct {
     cluster_id: [16]u8,
@@ -66,10 +67,16 @@ pub const Transport = struct {
         set_peer_event_callback: *const fn (ctx: *anyopaque, cb: ?PeerEventCallback) void,
         poll_one: *const fn (ctx: *anyopaque) Error!bool,
         identity: ?*const fn (ctx: *anyopaque) TransportIdentity = null,
+        set_wakeup: ?*const fn (ctx: *anyopaque, wakeup: ?*Wakeup) void = null,
     };
 
     pub fn start(self: Transport) Error!void {
         return self.vtable.start(self.ctx);
+    }
+    pub fn setWakeup(self: Transport, wakeup: ?*Wakeup) bool {
+        const set = self.vtable.set_wakeup orelse return false;
+        set(self.ctx, wakeup);
+        return true;
     }
     pub fn stop(self: Transport) void {
         self.vtable.stop(self.ctx);
@@ -102,6 +109,7 @@ pub const Transport = struct {
 /// Tests inspect `sent` to verify the Raft layer emitted expected messages.
 /// Inbound messages can be injected via `deliver`.
 pub const NoopTransport = struct {
+    wakeup: ?*Wakeup = null,
     sent: std.ArrayList(Message),
     inbox: std.ArrayList(Message),
     peer_events: std.ArrayList(PeerEvent),
@@ -143,12 +151,14 @@ pub const NoopTransport = struct {
             owned.deinit(self.allocator);
         }
         try self.inbox.append(self.allocator, cloned);
+        if (self.wakeup) |wakeup| wakeup.notify();
         return true;
     }
 
     pub fn deliverPeerEvent(self: *NoopTransport, event: PeerEvent) Error!bool {
         if (self.stopped.load(.acquire) or self.peer_event_callback == null) return false;
         try self.peer_events.append(self.allocator, event);
+        if (self.wakeup) |wakeup| wakeup.notify();
         return true;
     }
 
@@ -208,6 +218,7 @@ pub const NoopTransport = struct {
     }
 
     pub const vtable: Transport.VTable = .{
+        .set_wakeup = setWakeupImpl,
         .start = startImpl,
         .stop = stopImpl,
         .add_peer = addPeerImpl,
@@ -220,6 +231,12 @@ pub const NoopTransport = struct {
 
     pub fn transport(self: *NoopTransport) Transport {
         return .{ .ctx = self, .vtable = &vtable };
+    }
+
+    fn setWakeupImpl(ctx: *anyopaque, wakeup: ?*Wakeup) void {
+        const self: *NoopTransport = @ptrCast(@alignCast(ctx));
+        self.wakeup = wakeup;
+        if (wakeup) |value| value.notify();
     }
 };
 

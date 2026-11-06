@@ -51,8 +51,7 @@ pub const RaftorConfig = struct {
     /// Borrowed filesystem used when `data_dir` is non-empty. The default uses
     /// the host filesystem. A custom backend must outlive the Raftor.
     file_system: ?fs_mod.Fs = null,
-    /// Interval between ticks in milliseconds. The event loop sleeps this
-    /// long when idle.
+    /// Logical tick interval. Incoming work wakes the event loop independently.
     tick_interval_ms: u64 = 100,
     /// Maximum number of transport messages and events processed per tick.
     transport_poll_budget: usize = 256,

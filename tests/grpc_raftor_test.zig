@@ -368,6 +368,83 @@ test "grpc raftor: persistent three-node replication and live learner snapshot j
     try cluster.expectInitialStreamOpenCounts(initial_stream_counts);
 }
 
+test "grpc raftor: event driven proposals and Safe reads finish between ticks" {
+    const cluster = try Cluster.create(try reserveUniquePorts());
+    defer cluster.destroy();
+    try cluster.waitForInitialStreams();
+    try cluster.raftors[0].?.campaign();
+    const leader_index = try cluster.waitForStableLeader(initial_node_count);
+
+    const Driver = struct {
+        node: *raft.Raftor,
+        failure: ?raft.Error = null,
+
+        fn run(self: *@This()) void {
+            self.node.run() catch |err| {
+                self.failure = err;
+            };
+        }
+    };
+    const CompletionState = struct {
+        completed: std.atomic.Value(usize) = .init(0),
+        failures: std.atomic.Value(usize) = .init(0),
+
+        fn proposal(ctx: *anyopaque, result: raft.ProposalResult) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (result == .err) _ = self.failures.fetchAdd(1, .monotonic);
+            _ = self.completed.fetchAdd(1, .release);
+        }
+
+        fn read(ctx: *anyopaque, result: raft.ReadIndexResult) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (result == .err) _ = self.failures.fetchAdd(1, .monotonic);
+            _ = self.completed.fetchAdd(1, .release);
+        }
+    };
+    var completion: CompletionState = .{};
+    var drivers: [initial_node_count]Driver = undefined;
+    var threads: [initial_node_count]std.Thread = undefined;
+    var initial_ticks: [initial_node_count]u64 = undefined;
+    var started: usize = 0;
+    defer {
+        for (drivers[0..started]) |driver| driver.node.stop();
+        for (threads[0..started]) |thread| thread.join();
+    }
+    for (&drivers, &threads, &initial_ticks, 0..) |*driver, *thread, *ticks, index| {
+        const node = cluster.raftors[index].?;
+        node.config.tick_interval_ms = 5000;
+        node.config.transport_poll_budget = 1;
+        node.config.proposal_drain_budget = 1;
+        node.config.read_index_drain_budget = 1;
+        ticks.* = node.tick_count;
+        driver.* = .{ .node = node };
+        thread.* = try std.Thread.spawn(.{}, Driver.run, .{driver});
+        started += 1;
+    }
+    try std.testing.io.sleep(.fromNanoseconds(30 * std.time.ns_per_ms), .awake);
+    const start = try raft.Wakeup.now();
+    const leader = cluster.raftors[leader_index].?;
+    for (0..32) |_| {
+        try leader.propose("value", .{ .ctx = &completion, .function = CompletionState.proposal });
+        try leader.readIndex("safe-read", .{ .ctx = &completion, .function = CompletionState.read });
+    }
+    while (completion.completed.load(.acquire) != 64 and try raft.Wakeup.now() - start < std.time.ns_per_s) {
+        try std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .awake);
+    }
+    try std.testing.expectEqual(@as(usize, 64), completion.completed.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), completion.failures.load(.acquire));
+    try std.testing.io.sleep(.fromNanoseconds(30 * std.time.ns_per_ms), .awake);
+    const stop_start = try raft.Wakeup.now();
+    for (drivers) |driver| driver.node.stop();
+    for (threads) |thread| thread.join();
+    started = 0;
+    try std.testing.expect(try raft.Wakeup.now() - stop_start < std.time.ns_per_s);
+    for (drivers, initial_ticks) |driver, ticks| {
+        try std.testing.expect(driver.failure == null);
+        try std.testing.expectEqual(ticks + 1, driver.node.tick_count);
+    }
+}
+
 fn countLeaders(cluster: *Cluster, active_nodes: usize) usize {
     var count: usize = 0;
     for (cluster.raftors[0..active_nodes]) |raftor| if (raftor.?.isLeader()) {
