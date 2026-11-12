@@ -224,3 +224,79 @@ test "raftor multi-node: leadership loss terminates tracked requests" {
     try std.testing.expectEqual(@as(usize, 1), proposal.calls);
     try std.testing.expectEqual(@as(usize, 1), read.calls);
 }
+
+test "raftor multi-node: dropped forwarded proposals allow election recovery" {
+    const Callback = struct {
+        calls: usize = 0,
+        err: ?raft.Error = null,
+
+        fn proposal(ctx: *anyopaque, result: raft.ProposalResult) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+            if (result == .err) self.err = result.err;
+        }
+    };
+
+    for ([_]bool{ false, true }) |pre_vote| {
+        for ([_]bool{ false, true }) |use_poll| {
+            var dropped = Callback{};
+            var retried = Callback{};
+            var cluster = try createClusterWithCheckQuorum(true);
+            defer cluster.destroy();
+            isolated_node.store(0, .release);
+            defer isolated_node.store(0, .release);
+            for (cluster.raftors) |r| {
+                r.raw_node.raft.pre_vote = pre_vote;
+                r.config.proposal_timeout_ticks = 10;
+            }
+
+            const old_leader = cluster.raftors[0];
+            const sender = cluster.raftors[1];
+            try old_leader.campaign();
+            for (0..20) |_| try tickCluster(&cluster);
+            try std.testing.expect(old_leader.isLeader());
+            try std.testing.expectEqual(@as(u64, 1), sender.getStatus().leader_id);
+
+            isolated_node.store(1, .release);
+            cluster.net.drop_filter = dropIsolatedNode;
+            const expected_role: StateRole = if (pre_vote) .pre_candidate else .candidate;
+            var rounds: usize = 0;
+            while (rounds < 60 and old_leader.getStatus().role != expected_role) : (rounds += 1) {
+                _ = try old_leader.tick();
+            }
+            try std.testing.expectEqual(expected_role, old_leader.getStatus().role);
+            try std.testing.expectEqual(@as(u64, 1), sender.getStatus().leader_id);
+
+            isolated_node.store(0, .release);
+            try sender.propose("dropped", .{ .ctx = &dropped, .function = Callback.proposal });
+            _ = try sender.poll();
+            const inbox = cluster.net.getTransport(1).?.inbox.items;
+            try std.testing.expect(inbox.len > 0);
+            try std.testing.expectEqual(raft.MessageType.propose, inbox[inbox.len - 1].msg_type);
+            if (use_poll) {
+                try std.testing.expect(try old_leader.poll());
+            } else {
+                try std.testing.expect(try old_leader.tick());
+            }
+            try std.testing.expectEqual(expected_role, old_leader.getStatus().role);
+
+            for (0..60) |_| try tickCluster(&cluster);
+            try std.testing.expectEqual(@as(usize, 1), countLeaders(&cluster));
+            try std.testing.expectEqual(@as(usize, 1), dropped.calls);
+            try std.testing.expectEqual(error.Timeout, dropped.err.?);
+            try sender.propose("retry", .{ .ctx = &retried, .function = Callback.proposal });
+            for (0..30) |_| try tickCluster(&cluster);
+            try std.testing.expectEqual(@as(usize, 1), retried.calls);
+            try std.testing.expectEqual(@as(?raft.Error, null), retried.err);
+            try std.testing.expectEqual(@as(usize, 1), dropped.calls);
+            for (cluster.sms) |*sm| {
+                var retries: usize = 0;
+                for (sm.applied.items) |data| {
+                    try std.testing.expect(!std.mem.eql(u8, data, "dropped"));
+                    if (std.mem.eql(u8, data, "retry")) retries += 1;
+                }
+                try std.testing.expectEqual(@as(usize, 1), retries);
+            }
+        }
+    }
+}

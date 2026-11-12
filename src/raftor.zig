@@ -678,7 +678,7 @@ pub const Raftor = struct {
             return err;
         }
         self.raw_node.step(msg) catch |err| switch (err) {
-            error.StepLocalMsg, error.StepPeerNotFound => {},
+            error.StepLocalMsg, error.StepPeerNotFound, error.ProposalDropped => {},
             else => return err,
         };
     }
