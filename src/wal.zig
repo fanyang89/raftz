@@ -956,10 +956,9 @@ pub const WAL = struct {
         high: u64,
         max_size: ?u64,
     ) Error![]Entry {
-        if (self.entries.items.len == 0) return allocator.alloc(Entry, 0);
         const offset = self.firstIndex();
-        if (low < offset) return error.Compacted;
-        if (high > self.lastIndex() + 1) return error.Fatal;
+        try storage_mod.checkEntryRange(low, high, offset, self.lastIndex());
+        if (low == high) return allocator.alloc(Entry, 0);
         const lo: usize = @intCast(low - offset);
         const hi: usize = @intCast(high - offset);
         var result = try storage_mod.shareEntries(allocator, self.entries.items[lo..hi]);
