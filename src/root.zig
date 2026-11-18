@@ -373,6 +373,7 @@ test "re-exported modules compile" {
     _ = loopback_transport_mod;
     _ = loopback_multi_transport_mod;
     _ = multi_raft_mod;
+    _ = @import("replica_migration.zig");
     _ = @import("migration_intent_store.zig");
     _ = proposal_queue_mod;
     _ = request_context_mod;

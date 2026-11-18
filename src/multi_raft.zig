@@ -13,6 +13,7 @@ const state_machine_mod = @import("state_machine.zig");
 const transport_mod = @import("transport.zig");
 const multi_transport_mod = @import("multi_transport.zig");
 const group_config_mod = @import("multi_raft_group_config.zig");
+const migration_mod = @import("replica_migration.zig");
 const migration_intent_store_mod = @import("migration_intent_store.zig");
 const proposal_tracker_mod = @import("proposal_tracker.zig");
 
@@ -203,14 +204,11 @@ pub const GroupPreparer = struct {
     }
 };
 
-pub const ReplicaMigrationRequest = struct {
-    group_id: GroupId,
-    source_node_id: u64,
-    target_node_id: u64,
-    target_address: []const u8,
-    timeout_ticks: u64 = 600,
-    stable_catch_up_ticks: u32 = 2,
-};
+pub const ReplicaMigrationRequest = migration_mod.ReplicaMigrationRequest;
+pub const ReplicaMigrationStage = migration_mod.ReplicaMigrationStage;
+pub const ReplicaMigrationStatus = migration_mod.ReplicaMigrationStatus;
+pub const ReplicaMigrationResult = migration_mod.ReplicaMigrationResult;
+pub const ReplicaMigrationCallback = migration_mod.ReplicaMigrationCallback;
 
 pub const RecoveredReplicaMigrationStatus = struct {
     group_id: GroupId,
@@ -219,46 +217,6 @@ pub const RecoveredReplicaMigrationStatus = struct {
     timeout_ticks: u64,
     stable_catch_up_ticks: u32,
     target_address_bytes: usize,
-};
-
-pub const ReplicaMigrationStage = enum(u8) {
-    adding_learner,
-    waiting_learner,
-    catching_up,
-    waiting_voter,
-    stabilizing_voter,
-    waiting_target_leader,
-    waiting_source_removal,
-};
-
-pub const ReplicaMigrationStatus = struct {
-    group_id: GroupId,
-    source_node_id: u64,
-    target_node_id: u64,
-    stage: ReplicaMigrationStage,
-    elapsed_ticks: u64,
-    timeout_ticks: u64,
-    stable_catch_up_ticks: u32,
-    required_stable_ticks: u32,
-    target_matched: u64,
-    leader_commit: u64,
-    target_recent_active: bool,
-};
-
-pub const ReplicaMigrationResult = struct {
-    group_id: GroupId,
-    source_node_id: u64,
-    target_node_id: u64,
-    err: ?Error = null,
-};
-
-pub const ReplicaMigrationCallback = struct {
-    ctx: *anyopaque,
-    function: *const fn (ctx: *anyopaque, result: ReplicaMigrationResult) void,
-
-    pub fn invoke(self: ReplicaMigrationCallback, result: ReplicaMigrationResult) void {
-        self.function(self.ctx, result);
-    }
 };
 
 pub const GroupOperationKind = enum {
@@ -463,67 +421,7 @@ const GroupWakeQueue = struct {
     }
 };
 
-const ReplicaMigration = struct {
-    group_id: GroupId,
-    source_node_id: u64,
-    target_node_id: u64,
-    target_address: []u8,
-    timeout_ticks: u64,
-    required_stable_ticks: u32,
-    start_tick: u64,
-    callback: ReplicaMigrationCallback,
-    stage: std.atomic.Value(ReplicaMigrationStage) = std.atomic.Value(ReplicaMigrationStage).init(.adding_learner),
-    stable_ticks: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    target_matched: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    leader_commit: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    target_recent_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    cancel_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    source_removal_submitted: bool = false,
-    allocator: std.mem.Allocator,
-
-    fn create(
-        allocator: std.mem.Allocator,
-        request: ReplicaMigrationRequest,
-        start_tick: u64,
-        callback: ReplicaMigrationCallback,
-    ) Error!*ReplicaMigration {
-        const self = try allocator.create(ReplicaMigration);
-        errdefer allocator.destroy(self);
-        self.* = .{
-            .group_id = request.group_id,
-            .source_node_id = request.source_node_id,
-            .target_node_id = request.target_node_id,
-            .target_address = try allocator.dupe(u8, request.target_address),
-            .timeout_ticks = request.timeout_ticks,
-            .required_stable_ticks = request.stable_catch_up_ticks,
-            .start_tick = start_tick,
-            .callback = callback,
-            .allocator = allocator,
-        };
-        return self;
-    }
-
-    fn destroy(self: *ReplicaMigration) void {
-        self.allocator.free(self.target_address);
-        self.allocator.destroy(self);
-    }
-
-    fn status(self: *const ReplicaMigration, now: u64) ReplicaMigrationStatus {
-        return .{
-            .group_id = self.group_id,
-            .source_node_id = self.source_node_id,
-            .target_node_id = self.target_node_id,
-            .stage = self.stage.load(.acquire),
-            .elapsed_ticks = now -| self.start_tick,
-            .timeout_ticks = self.timeout_ticks,
-            .stable_catch_up_ticks = self.stable_ticks.load(.acquire),
-            .required_stable_ticks = self.required_stable_ticks,
-            .target_matched = self.target_matched.load(.acquire),
-            .leader_commit = self.leader_commit.load(.acquire),
-            .target_recent_active = self.target_recent_active.load(.acquire),
-        };
-    }
-};
+const ReplicaMigration = migration_mod.ReplicaMigration;
 
 fn migrationIntentView(request: ReplicaMigrationRequest) migration_intent_store_mod.IntentView {
     return .{
@@ -543,23 +441,6 @@ fn migrationIntentMatches(intent: MigrationIntent, request: ReplicaMigrationRequ
         intent.timeout_ticks == request.timeout_ticks and
         intent.stable_catch_up_ticks == request.stable_catch_up_ticks and
         std.mem.eql(u8, intent.target_address, request.target_address);
-}
-
-fn migrationCaughtUp(
-    migration: *ReplicaMigration,
-    probe: raftor_mod.ReplicaMigrationProbe,
-    advance_clock: bool,
-) bool {
-    if (!probe.target_recent_active or probe.target_matched < probe.commit_index) {
-        migration.stable_ticks.store(0, .release);
-        return false;
-    }
-    var stable = migration.stable_ticks.load(.acquire);
-    if (advance_clock and stable < std.math.maxInt(u32)) {
-        stable += 1;
-        migration.stable_ticks.store(stable, .release);
-    }
-    return stable >= migration.required_stable_ticks;
 }
 
 fn retainedMessageBytes(message: Message) usize {
@@ -1793,12 +1674,6 @@ pub const MultiRaftHost = struct {
         return had_work;
     }
 
-    const MigrationStepResult = union(enum) {
-        idle,
-        worked,
-        completed: ?Error,
-    };
-
     fn driveReplicaMigrations(self: *MultiRaftHost, advance_clock: bool) bool {
         spinLock(&self.replica_migrations_mutex);
         const count = self.replica_migration_ids.items.len;
@@ -1839,7 +1714,7 @@ pub const MultiRaftHost = struct {
         self: *MultiRaftHost,
         migration: *ReplicaMigration,
         advance_clock: bool,
-    ) MigrationStepResult {
+    ) migration_mod.StepResult {
         if (migration.cancel_requested.load(.acquire)) {
             return .{ .completed = error.ReplicaMigrationCancelled };
         }
@@ -1861,183 +1736,20 @@ pub const MultiRaftHost = struct {
             migration.target_node_id,
             migration.target_address,
         ) catch |err| return .{ .completed = err };
-        migration.target_matched.store(probe.target_matched, .release);
-        migration.leader_commit.store(probe.commit_index, .release);
-        migration.target_recent_active.store(probe.target_recent_active, .release);
-
-        if (probe.target_role != null and !probe.target_address_matches) {
-            return .{ .completed = error.ReplicaMigrationConflict };
-        }
-        if (probe.source_role == null) {
-            if (probe.target_role == .voter and probe.target_address_matches) {
-                return .{ .completed = null };
-            }
-            return .{ .completed = error.ReplicaMigrationConflict };
-        }
-        if (probe.source_role != .voter) return .{ .completed = error.ReplicaMigrationConflict };
-        if (probe.joint_configuration) return .idle;
-        const stage = migration.stage.load(.acquire);
-        if (stage == .waiting_target_leader) {
-            return self.waitMigrationTargetLeader(selected, migration, probe);
-        }
-        if (stage == .waiting_source_removal and probe.local_role != .leader) {
-            return self.waitMigrationSourceRemoval(selected, migration, probe);
-        }
-        if (probe.local_role != .leader) {
-            migration.stable_ticks.store(0, .release);
-            return .idle;
-        }
-
-        return switch (stage) {
-            .adding_learner => self.addMigrationLearner(selected, migration, probe),
-            .waiting_learner => switch (probe.target_role orelse {
-                if (!probe.pending_conf_change) migration.stage.store(.adding_learner, .release);
-                return .idle;
-            }) {
-                .learner => self.advanceMigrationStage(migration, .catching_up),
-                .voter => self.advanceMigrationStage(migration, .stabilizing_voter),
+        switch (migration.observe(probe, advance_clock, self.config.node_id, selected.raftor.proposalForwardingEnabled())) {
+            .result => |result| return result,
+            .action => |action| {
+                const outcome = switch (action) {
+                    .add_learner => selected.raftor.addLearner(migration.target_node_id, migration.target_address),
+                    .promote => selected.raftor.addNode(migration.target_node_id, migration.target_address),
+                    .transfer => selected.raftor.transferLeader(migration.target_node_id),
+                    .remove => selected.raftor.removeNode(migration.source_node_id),
+                };
+                const result = migration.finishAction(action, outcome);
+                if (action == .transfer and result == .worked) _ = self.replica_migration_leader_transfers.fetchAdd(1, .monotonic);
+                return result;
             },
-            .catching_up => self.catchUpMigrationLearner(selected, migration, probe, advance_clock),
-            .waiting_voter => switch (probe.target_role orelse
-                return .{ .completed = error.ReplicaMigrationConflict }) {
-                .learner => if (probe.pending_conf_change)
-                    .idle
-                else
-                    self.advanceMigrationStage(migration, .catching_up),
-                .voter => self.advanceMigrationStage(migration, .stabilizing_voter),
-            },
-            .stabilizing_voter => self.stabilizeMigrationVoter(selected, migration, probe, advance_clock),
-            .waiting_target_leader => unreachable,
-            .waiting_source_removal => self.waitMigrationSourceRemoval(selected, migration, probe),
-        };
-    }
-
-    fn addMigrationLearner(
-        self: *MultiRaftHost,
-        group: *Group,
-        migration: *ReplicaMigration,
-        probe: raftor_mod.ReplicaMigrationProbe,
-    ) MigrationStepResult {
-        if (probe.target_role) |role| return self.advanceMigrationStage(
-            migration,
-            if (role == .learner) .catching_up else .stabilizing_voter,
-        );
-        if (probe.pending_conf_change) return .idle;
-        group.raftor.addLearner(migration.target_node_id, migration.target_address) catch |err| {
-            if (err == error.ProposalDropped) return .idle;
-            return .{ .completed = err };
-        };
-        migration.stage.store(.waiting_learner, .release);
-        migration.stable_ticks.store(0, .release);
-        return .worked;
-    }
-
-    fn catchUpMigrationLearner(
-        self: *MultiRaftHost,
-        group: *Group,
-        migration: *ReplicaMigration,
-        probe: raftor_mod.ReplicaMigrationProbe,
-        advance_clock: bool,
-    ) MigrationStepResult {
-        if (probe.target_role == .voter) return self.advanceMigrationStage(migration, .stabilizing_voter);
-        if (probe.target_role != .learner) return .{ .completed = error.ReplicaMigrationConflict };
-        if (probe.pending_conf_change) return .idle;
-        if (!migrationCaughtUp(migration, probe, advance_clock)) return .idle;
-        group.raftor.addNode(migration.target_node_id, migration.target_address) catch |err| {
-            if (err == error.ProposalDropped) return .idle;
-            return .{ .completed = err };
-        };
-        migration.stage.store(.waiting_voter, .release);
-        migration.stable_ticks.store(0, .release);
-        return .worked;
-    }
-
-    fn stabilizeMigrationVoter(
-        self: *MultiRaftHost,
-        group: *Group,
-        migration: *ReplicaMigration,
-        probe: raftor_mod.ReplicaMigrationProbe,
-        advance_clock: bool,
-    ) MigrationStepResult {
-        if (probe.target_role != .voter) return .{ .completed = error.ReplicaMigrationConflict };
-        if (probe.pending_conf_change) return .idle;
-        if (!migrationCaughtUp(migration, probe, advance_clock)) return .idle;
-        if (migration.source_node_id == self.config.node_id and
-            probe.leader_id == migration.source_node_id and
-            group.raftor.proposalForwardingEnabled())
-        {
-            group.raftor.transferLeader(migration.target_node_id) catch |err| {
-                if (err == error.ProposalDropped) return .idle;
-                return .{ .completed = err };
-            };
-            _ = self.replica_migration_leader_transfers.fetchAdd(1, .monotonic);
-            migration.stage.store(.waiting_target_leader, .release);
-            migration.stable_ticks.store(0, .release);
-            return .worked;
         }
-        return self.submitMigrationSourceRemoval(group, migration, probe);
-    }
-
-    fn waitMigrationTargetLeader(
-        self: *MultiRaftHost,
-        group: *Group,
-        migration: *ReplicaMigration,
-        probe: raftor_mod.ReplicaMigrationProbe,
-    ) MigrationStepResult {
-        if (probe.target_role != .voter) return .{ .completed = error.ReplicaMigrationConflict };
-        if (probe.pending_conf_change) return .idle;
-        if (probe.leader_id == migration.target_node_id) {
-            return self.submitMigrationSourceRemoval(group, migration, probe);
-        }
-        if (probe.local_role != .leader) return .idle;
-        group.raftor.transferLeader(migration.target_node_id) catch |err| {
-            if (err == error.ProposalDropped) return .idle;
-            return .{ .completed = err };
-        };
-        _ = self.replica_migration_leader_transfers.fetchAdd(1, .monotonic);
-        return .worked;
-    }
-
-    fn waitMigrationSourceRemoval(
-        self: *MultiRaftHost,
-        group: *Group,
-        migration: *ReplicaMigration,
-        probe: raftor_mod.ReplicaMigrationProbe,
-    ) MigrationStepResult {
-        if (probe.source_role == null) return .{ .completed = null };
-        if (probe.target_role != .voter) return .{ .completed = error.ReplicaMigrationConflict };
-        if (probe.pending_conf_change) return .idle;
-        if (migration.source_removal_submitted and probe.local_role != .leader) return .idle;
-        return self.submitMigrationSourceRemoval(group, migration, probe);
-    }
-
-    fn submitMigrationSourceRemoval(
-        self: *MultiRaftHost,
-        group: *Group,
-        migration: *ReplicaMigration,
-        probe: raftor_mod.ReplicaMigrationProbe,
-    ) MigrationStepResult {
-        _ = self;
-        if (probe.local_role != .leader and !group.raftor.proposalForwardingEnabled()) return .idle;
-        group.raftor.removeNode(migration.source_node_id) catch |err| {
-            if (err == error.ProposalDropped) return .idle;
-            return .{ .completed = err };
-        };
-        migration.source_removal_submitted = true;
-        migration.stage.store(.waiting_source_removal, .release);
-        migration.stable_ticks.store(0, .release);
-        return .worked;
-    }
-
-    fn advanceMigrationStage(
-        self: *MultiRaftHost,
-        migration: *ReplicaMigration,
-        stage: ReplicaMigrationStage,
-    ) MigrationStepResult {
-        _ = self;
-        migration.stage.store(stage, .release);
-        migration.stable_ticks.store(0, .release);
-        return .worked;
     }
 
     fn finishReplicaMigration(
