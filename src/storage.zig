@@ -19,6 +19,12 @@ pub const Snapshot = types.Snapshot;
 pub const HardState = types.HardState;
 pub const ConfState = types.ConfState;
 
+pub fn checkEntryRange(low: u64, high: u64, first: u64, last: u64) Error!void {
+    if (low > high) return error.Fatal;
+    if (low < first) return error.Compacted;
+    if (high > last +| 1) return error.Fatal;
+}
+
 /// Persisted state supplied to a freshly started Raft node.
 pub const RaftState = struct {
     hard_state: HardState = .{},

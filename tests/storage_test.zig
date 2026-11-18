@@ -78,6 +78,41 @@ test "storage: entries slice and limit behavior" {
     }
 }
 
+fn checkEntryRanges(storage: raft.Storage, first: u64, end: u64) !void {
+    const ctx = raft.GetEntriesContext{ .empty = .{ .can_async = false } };
+    try std.testing.expectError(error.Compacted, storage.entries(allocator, first - 1, end + 1, null, ctx));
+    try std.testing.expectError(error.Fatal, storage.entries(allocator, end + 1, end + 1, null, ctx));
+    try std.testing.expectError(error.Fatal, storage.entries(allocator, end, end - 1, null, ctx));
+
+    const empty = try storage.entries(allocator, end, end, null, ctx);
+    defer freeEntries(empty);
+    try std.testing.expectEqual(0, empty.len);
+
+    const entries = try storage.entries(allocator, first, end, null, ctx);
+    defer freeEntries(entries);
+    try std.testing.expectEqual(end - first, entries.len);
+    for (entries, 0..) |entry, i| try std.testing.expectEqual(first + i, entry.index);
+}
+
+test "storage: both backends honor retained entry ranges" {
+    var fixture = try raft.FsTestFixture.init(allocator, .real);
+    defer fixture.deinit();
+    const wal = try raft.WALStorage.openWithFs(allocator, fixture.walDir(), fixture.fs());
+    defer wal.deinit();
+    var memory = raft.MemoryStorage.init();
+    defer memory.deinit(allocator);
+
+    const readers = [_]raft.Storage{ memory.asStorage(), wal.asStorage() };
+    for (readers) |reader| try checkEntryRanges(reader, 1, 1);
+    for ([_]raft.WritableStorage{ memory.asWritableStorage(), wal.asWritableStorage() }) |writer| {
+        try writer.append(allocator, &.{ .{ .index = 1, .term = 1 }, .{ .index = 2, .term = 1 } });
+    }
+    for (readers) |reader| try checkEntryRanges(reader, 1, 3);
+    try memory.compact(allocator, 2);
+    try wal.wal.compact(2);
+    for (readers) |reader| try checkEntryRanges(reader, 2, 3);
+}
+
 test "storage: first and last index track append" {
     var storage = raft.MemoryStorage.init();
     defer storage.deinit(allocator);

@@ -270,11 +270,7 @@ pub const MemoryStorage = struct {
         max_size: ?u64,
         context: GetEntriesContext,
     ) Error![]Entry {
-        if (low > high) return error.Fatal;
-        if (low < self.core.firstIndex()) return error.Compacted;
-        if (high > self.core.lastIndex() + 1) {
-            return error.Fatal;
-        }
+        try storage_mod.checkEntryRange(low, high, self.core.firstIndex(), self.core.lastIndex());
         if (low == high) return allocator.alloc(Entry, 0);
 
         if (self.core.trigger_log_unavailable and context.canAsync()) {
