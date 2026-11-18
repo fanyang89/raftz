@@ -1158,20 +1158,29 @@ test "raftor: transport poll budget drains bursts" {
     defer sm.deinit();
     var config = makeConfig(1);
     config.transport_poll_budget = 3;
+    config.async_ready = true;
     const r = try Raftor.createWithDependencies(allocator, config, .bootstrap, .{
         .storage = storage.asWritableStorage(),
         .transport = transport.transport(),
         .state_machine = sm.stateMachine(),
     });
     defer r.destroy();
-    for (0..5) |_| try transport.queueMessage(.{ .msg_type = .hup });
+    for (0..2) |_| try transport.queueMessage(.{ .msg_type = .hup });
+    try transport.queueMessage(.{ .msg_type = .heartbeat, .from = 2, .to = 1, .term = 2 });
+    try transport.queueMessage(.{ .msg_type = .hup });
+    try transport.queueMessage(.{ .msg_type = .heartbeat, .from = 2, .to = 1, .term = 3 });
 
     _ = try r.tick();
     try std.testing.expectEqual(@as(usize, 3), transport.delivered_message_count);
     try std.testing.expectEqual(@as(usize, 2), transport.inbound_messages.items.len);
-    _ = try r.tick();
+    try std.testing.expectEqual(@as(u64, 2), storage.core.raft_state.hard_state.term);
+    try std.testing.expectEqual(@as(?raft.ReadyPhase, null), r.getReadyPhase());
+    try std.testing.expect(try r.poll());
     try std.testing.expectEqual(@as(usize, 5), transport.delivered_message_count);
     try std.testing.expectEqual(@as(usize, 0), transport.inbound_messages.items.len);
+    try std.testing.expectEqual(@as(u64, 3), storage.core.raft_state.hard_state.term);
+    try std.testing.expectEqual(@as(?raft.ReadyPhase, null), r.getReadyPhase());
+    try std.testing.expect(!try r.poll());
 }
 
 test "raftor: proposal drain budget preserves transport progress" {

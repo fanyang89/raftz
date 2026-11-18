@@ -717,13 +717,7 @@ pub const Raftor = struct {
         var had_work = false;
         while (try self.processReady()) had_work = true;
         if (try self.drainIngress()) had_work = true;
-        while (try self.processReady()) had_work = true;
-        for (0..self.config.transport_poll_budget) |_| {
-            if (!try self.transport.pollOne()) break;
-            had_work = true;
-        }
-        while (try self.processReady()) had_work = true;
-        if (try self.flushReadyInternal()) had_work = true;
+        if (try self.finishDriverTurn()) had_work = true;
         return had_work;
     }
 
@@ -741,11 +735,19 @@ pub const Raftor = struct {
 
         self.proposal_tracker.expireTimeouts(self.tick_count);
 
-        var had_work = try self.drainIngress();
-
+        _ = try self.drainIngress();
         _ = try self.raw_node.tick();
-        had_work = true;
+        _ = try self.finishDriverTurn();
 
+        self.maybeAutoSnapshot() catch |e| switch (e) {
+            error.SnapshotOutOfDate => log.debug(@src(), "snapshot attempt skipped: {s}", .{@errorName(e)}),
+            else => log.warn(@src(), "snapshot attempt failed: {s}", .{@errorName(e)}),
+        };
+        return true;
+    }
+
+    fn finishDriverTurn(self: *Raftor) Error!bool {
+        var had_work = false;
         while (try self.processReady()) {
             had_work = true;
         }
@@ -761,12 +763,6 @@ pub const Raftor = struct {
             had_work = true;
         }
         if (try self.flushReadyInternal()) had_work = true;
-
-        self.maybeAutoSnapshot() catch |e| switch (e) {
-            error.SnapshotOutOfDate => log.debug(@src(), "snapshot attempt skipped: {s}", .{@errorName(e)}),
-            else => log.warn(@src(), "snapshot attempt failed: {s}", .{@errorName(e)}),
-        };
-
         return had_work;
     }
 
