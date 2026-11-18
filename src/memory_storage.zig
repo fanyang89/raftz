@@ -268,10 +268,12 @@ pub const MemoryStorage = struct {
         max_size: ?u64,
         context: GetEntriesContext,
     ) Error![]Entry {
+        if (low > high) return error.Fatal;
         if (low < self.core.firstIndex()) return error.Compacted;
         if (high > self.core.lastIndex() + 1) {
             return error.Fatal;
         }
+        if (low == high) return allocator.alloc(Entry, 0);
 
         if (self.core.trigger_log_unavailable and context.canAsync()) {
             self.core.get_entries_context = context;
@@ -722,6 +724,14 @@ test "memory storage entries honor bounds and max size" {
     const allocator = std.testing.allocator;
     var storage = MemoryStorage.init();
     defer storage.deinit(allocator);
+
+    const context: GetEntriesContext = .{ .empty = .{ .can_async = false } };
+    const empty = try storage.entries(allocator, 1, 1, null, context);
+    defer allocator.free(empty);
+    try std.testing.expectEqual(0, empty.len);
+    try std.testing.expectError(error.Compacted, storage.entries(allocator, 0, 0, null, context));
+    try std.testing.expectError(error.Fatal, storage.entries(allocator, 2, 2, null, context));
+    try std.testing.expectError(error.Fatal, storage.entries(allocator, 2, 1, null, context));
 
     var raw = [_]Entry{
         .{ .index = 3, .term = 3 },
