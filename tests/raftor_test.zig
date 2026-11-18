@@ -3049,14 +3049,6 @@ test "raftor: membership index skips already durable joint entries on restart" {
     var storage = raft.MemoryStorage.init();
     defer storage.deinit(allocator);
     var peers = [_]raft.PeerEndpoint{.{ .node_id = 1, .address = @constCast("node-1") }};
-    try seedMembership(
-        &storage,
-        .{ .voters = @constCast(&[_]u64{1}) },
-        &peers,
-        @constCast(&[_]u64{2}),
-        2,
-        .{ .term = 3, .commit = 2 },
-    );
     var remove = [_]raft.ConfChangeSingle{.{ .change_type = .remove_node, .node_id = 2 }};
     var entries = [_]raft.Entry{
         .{
@@ -3074,6 +3066,14 @@ test "raftor: membership index skips already durable joint entries on restart" {
     };
     defer for (&entries) |*entry| entry.deinit(allocator);
     try storage.setEntries(allocator, &entries);
+    try seedMembership(
+        &storage,
+        .{ .voters = @constCast(&[_]u64{1}) },
+        &peers,
+        @constCast(&[_]u64{2}),
+        2,
+        .{ .term = 3, .commit = 2 },
+    );
 
     var transport = RecordingTransport.init(allocator);
     defer transport.deinit();
@@ -3191,6 +3191,7 @@ test "raftor: local snapshot injects membership and restores it on restart" {
     var storage = raft.MemoryStorage.init();
     defer storage.deinit(allocator);
     var peers = [_]raft.PeerEndpoint{.{ .node_id = 1, .address = @constCast("node-1") }};
+    try storage.setEntries(allocator, &.{.{ .term = 1, .index = 1 }});
     try seedMembership(
         &storage,
         .{ .voters = @constCast(&[_]u64{1}) },
@@ -3199,7 +3200,6 @@ test "raftor: local snapshot injects membership and restores it on restart" {
         0,
         .{ .term = 1, .commit = 1 },
     );
-    try storage.setEntries(allocator, &.{.{ .term = 1, .index = 1 }});
     var config = makeConfig(1);
     config.raft.applied = 1;
 
