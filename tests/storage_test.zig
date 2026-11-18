@@ -252,11 +252,16 @@ test "storage: snapshot rejects commit outside retained bounds" {
     defer storage.deinit(allocator);
     try storage.applySnapshot(allocator, .{ .metadata = .{ .index = 3, .term = 2 } });
 
+    try std.testing.expectError(error.Fatal, storage.setHardState(.{ .commit = 4 }));
+    try std.testing.expectEqual(@as(u64, 3), storage.core.raft_state.hard_state.commit);
+    storage.core.raft_state.hard_state.commit = 4;
+    try std.testing.expectError(error.Fatal, storage.getSnapshot(allocator, 0, 0));
+
     try storage.setHardState(.{ .commit = 2 });
     try std.testing.expectError(error.Fatal, storage.core.snapshot(allocator));
 
     try storage.append(allocator, &.{.{ .index = 4, .term = 2 }});
-    try storage.setHardState(.{ .commit = 5 });
+    storage.core.raft_state.hard_state.commit = 5;
     try std.testing.expectError(error.Fatal, storage.core.snapshot(allocator));
 }
 

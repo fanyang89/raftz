@@ -56,7 +56,8 @@ pub const MemoryStorageCore = struct {
         self.* = undefined;
     }
 
-    pub fn setHardState(self: *MemoryStorageCore, hs: HardState) void {
+    pub fn setHardState(self: *MemoryStorageCore, hs: HardState) Error!void {
+        if (hs.commit > self.lastIndex()) return error.Fatal;
         self.raft_state.hard_state = hs;
     }
 
@@ -212,8 +213,9 @@ pub const MemoryStorageCore = struct {
 
         var term = self.snapshot_data.metadata.term;
         if (commit > self.snapshot_data.metadata.index) {
+            if (self.entries.items.len == 0) return error.Fatal;
             const offset = self.entries.items[0].index;
-            if (commit - offset >= self.entries.items.len) {
+            if (commit < offset or commit - offset >= self.entries.items.len) {
                 return error.Fatal;
             }
             term = self.entries.items[commit - offset].term;
@@ -414,7 +416,7 @@ pub const MemoryStorage = struct {
     }
 
     pub fn setHardState(self: *MemoryStorage, hs: HardState) Error!void {
-        self.core.setHardState(hs);
+        return self.core.setHardState(hs);
     }
 
     pub fn triggerSnapshotUnavailable(self: *MemoryStorage) void {
@@ -1297,7 +1299,6 @@ test "memory storage rejects invalid legacy migration without mutation" {
     var storage = MemoryStorage.init();
     defer storage.deinit(allocator);
     try storage.setConfState(allocator, .{ .voters = @constCast(&[_]u64{1}) });
-    try storage.setHardState(.{ .term = 1, .commit = 4 });
     var peers = [_]cluster_membership_mod.PeerEndpoint{
         .{ .node_id = 1, .address = @constCast("node-1") },
     };
